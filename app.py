@@ -59,11 +59,10 @@ def obtener_tarifa_galeno(cod_practica, categoria_medico, df_vf):
     if not t_cat.empty: return float(t_cat.sort_values(by='Periodo', ascending=False).iloc[0]['Total prestación'])
     return float(coincidencias_base.sort_values(by='Periodo', ascending=False).iloc[0]['Total prestación'])
 
-# 2. BOT EXTRACTOR SEGURO (OPTIMIZADO PARA DOCKER/RAILWAY)
+# 2. BOT EXTRACTOR DIAGNÓSTICO (CAPTURA FOTOS EN CASO DE ERROR)
 def worker_extractor(lista_ids_chunk, worker_id, usuario, clave, modo_invisible):
     mapeo_parcial = {}
     with sync_playwright() as p:
-        # ⚡ OPTIMIZACIÓN EN LA NUBE: Flags críticos para evitar colapsos por memoria RAM en Railway
         browser = p.chromium.launch(
             headless=modo_invisible, 
             args=[
@@ -77,36 +76,34 @@ def worker_extractor(lista_ids_chunk, worker_id, usuario, clave, modo_invisible)
         context = browser.new_context(viewport={"width": 1920, "height": 1080})
         page = context.new_page()
         try:
-            # Login estable inicial
+            # Fase 1: Login e ingreso al módulo
             page.goto("https://cmsc.evweb.com.ar/Account/Login", timeout=60000)
             page.fill("input[name='UserName']", usuario)
             page.fill("#Password", clave)
             page.click("button[type='submit']")
             
-            # Filtro estricto de visibilidad para saltear clones móviles
+            # Espera y clicks del menú
             menu_facturacion = page.get_by_text(re.compile(r"Facturaci", re.IGNORECASE)).filter(visible=True).first
-            menu_facturacion.wait_for(state="visible", timeout=45000)
+            menu_facturacion.wait_for(state="visible", timeout=30000)
             menu_facturacion.click()
             
             menu_prestaciones = page.get_by_text(re.compile(r"prestaci", re.IGNORECASE)).filter(visible=True).first
-            menu_prestaciones.wait_for(state="visible", timeout=30000)
+            menu_prestaciones.wait_for(state="visible", timeout=20000)
             menu_prestaciones.click()
             
-            page.wait_for_load_state("domcontentloaded", timeout=30000)
+            page.wait_for_load_state("domcontentloaded", timeout=20000)
 
+            # Fase 2: Bucle de extracción de datos
             for id_transaccion in lista_ids_chunk:
                 id_str = str(id_transaccion).strip()
                 try:
-                    # Recarga limpia obligatoria de ASP
                     page.reload(wait_until="domcontentloaded")
                     time.sleep(1.5)
                     
                     iframe_target = next((f for f in page.frames if f.locator("#body_txtNroAutorizacion").count() > 0), page.frames[1])
-                    
                     input_autorizacion = iframe_target.locator("#body_txtNroAutorizacion")
                     input_autorizacion.wait_for(state="attached", timeout=15000)
                     
-                    # Reapertura y Blanqueo síncrono por DOM
                     iframe_target.evaluate("""() => {
                         let input = document.getElementById("body_txtNroAutorizacion");
                         if (input) {
@@ -124,15 +121,10 @@ def worker_extractor(lista_ids_chunk, worker_id, usuario, clave, modo_invisible)
                     }""")
 
                     input_autorizacion.fill(id_str)
-                    
-                    # Ejecución del clic de búsqueda
                     iframe_target.locator("#body_btnFiltro").click()
-                    
-                    # Pausa fija de estabilidad para dar tiempo al renderizado real
                     time.sleep(4.5) 
                     
                     filas = iframe_target.locator("table tr").all()
-                    
                     if len(filas) <= 1 or "No Hay Registros" in iframe_target.locator("table").inner_text():
                         mapeo_parcial[id_transaccion] = {"Profesional": "revisar", "Matricula": "revisar"}
                     else:
@@ -141,9 +133,18 @@ def worker_extractor(lista_ids_chunk, worker_id, usuario, clave, modo_invisible)
                 except:
                     mapeo_parcial[id_transaccion] = {"Profesional": "revisar", "Matricula": "revisar"}
                     continue
+                    
+        except Exception as e:
+            # 📸 SI CORTA ACÁ: Saca una foto de la pantalla del servidor y la manda a la interfaz
+            try:
+                screenshot_bytes = page.screenshot(type="png")
+            except:
+                screenshot_bytes = None
+            return {"data": {}, "error": str(e), "screenshot": screenshot_bytes}
         finally:
             browser.close()
-    return mapeo_parcial
+            
+    return {"data": mapeo_parcial, "error": None, "screenshot": None}
 
 # 3. INTERFAZ Y RECOLECCIÓN DE PARÁMETROS (SIDEBAR)
 st.sidebar.header("🔒 Credenciales e Infraestructura")
@@ -152,8 +153,8 @@ clave_evweb = st.sidebar.text_input("Contraseña EVWEB", type="password", placeh
 
 st.sidebar.markdown("---")
 st.sidebar.header("⚡ Ajustes de Rendimiento")
-# ⚠️ RECOMENDACIÓN EN NUBE: El valor por defecto se fija en 2 para cuidar los límites del plan de Railway
-cant_navegadores = st.sidebar.slider("Navegadores simultáneos", min_value=1, max_value=6, value=2)
+# Recomendado en 1 o 2 hilos para la prueba de diagnóstico en la nube
+cant_navegadores = st.sidebar.slider("Navegadores simultáneos", min_value=1, max_value=6, value=1)
 modo_oculto = st.sidebar.checkbox("Ejecutar en modo invisible (Más rápido)", value=True)
 
 # 4. ÁREA PRINCIPAL: DRAG & DROP DE ARCHIVOS
@@ -188,6 +189,7 @@ if archivo_facturacion and archivo_valores:
                 
                 tiempo_inicio = time.time()
                 datos_scraped_totales = {}
+                hubo_errores_globales = False
                 
                 with ThreadPoolExecutor(max_workers=cant_navegadores) as executor:
                     futuros = [
@@ -195,13 +197,24 @@ if archivo_facturacion and archivo_valores:
                         for i in range(cant_navegadores)
                     ]
                     
-                    for f in futuros:
-                        datos_scraped_totales.update(f.result())
-                        progreso_bar.progress(len(datos_scraped_totales) / total_filas)
-                        status_text.text(f"⏳ Auditados {len(datos_scraped_totales)} de {total_filas} registros...")
+                    for idx, f in enumerate(futuros):
+                        resultado = f.result()
+                        if resultado.get("error"):
+                            hubo_errores_globales = True
+                            st.error(f"❌ El Navegador {idx+1} no pudo iniciar sesión: {resultado['error']}")
+                            if resultado.get("screenshot"):
+                                st.image(resultado["screenshot"], caption=f"Captura de pantalla del Servidor - Navegador {idx+1}")
+                        else:
+                            datos_scraped_totales.update(resultado["data"])
+                            
+                        progreso_bar.progress((idx + 1) / cant_navegadores)
+                        status_text.text(f"⏳ Evaluando hilos de procesamiento...")
+
+                if hubo_errores_globales and not datos_scraped_totales:
+                    st.stop()
 
                 progreso_bar.progress(1.0)
-                status_text.text("✅ Extracción Web completada. Aplicando matriz de cálculo de aranceles...")
+                status_text.text("✅ Procesando matriz de cálculo de aranceles...")
                 
                 df_final = df_importado.copy()
                 df_final['matricula'] = ""
@@ -219,7 +232,7 @@ if archivo_facturacion and archivo_valores:
                 
                 for idx, fila in df_final.iterrows():
                     medico_evweb = fila['profesional']
-                    if medico_evweb == "revisar":
+                    if medico_evweb == "revisar" or not medico_evweb:
                         df_final.at[idx, 'categoría'] = "revisar"
                         df_final.at[idx, 'especialidad'] = "revisar"
                         continue
@@ -239,8 +252,7 @@ if archivo_facturacion and archivo_valores:
                 df_final['total'] = df_final['Valor'] * df_final['Cant. Tratamientos']
                 
                 tiempo_total = time.time() - tiempo_inicio
-                st.success(f"🎉 ¡Auditoría finalizada con éxito en {tiempo_total/60:.2f} minutos!")
-                
+                st.success(f"🎉 ¡Proceso finalizado en {tiempo_total/60:.2f} minutos!")
                 st.dataframe(df_final[['Id Transacción', 'Practi. Presta', 'profesional', 'categoría', 'Valor', 'total']].head(10))
                 
                 output = io.BytesIO()
