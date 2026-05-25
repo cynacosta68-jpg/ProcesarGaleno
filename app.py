@@ -4,15 +4,15 @@ import time
 import re
 import os
 import unicodedata
-from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright
 import io
 
 # 👑 CONFIGURACIÓN ESTÉTICA DE LA PÁGINA
-st.set_page_config(page_title="Procesador Galeno", page_icon="🚀", layout="wide")
+st.set_page_config(page_title="Procesador Galeno - Estrategia Masiva", page_icon="🚀", layout="wide")
 
-st.title("🚀 Procesador Inteligente de Facturación - GALENO")
-st.markdown("Cargá las planillas de facturación y las bases de aranceles para ejecutar la auditoría automatizada en tempo real.")
+st.title("🚀 Auditoría Galeno - Estrategia B (Descarga Masiva)")
+st.markdown("Cruce local ultrarrápido mediante exportación consolidada de bloques de aranceles de EVWEB.")
 st.markdown("---")
 
 # 1. FUNCIONES AUXILIARES GENERALES
@@ -24,7 +24,7 @@ def normalizar_cadena(texto):
 
 def buscar_coincidencia_medico(nombre_evweb, df_usuarios):
     nombre_evweb_norm = normalizar_cadena(nombre_evweb)
-    if not nombre_evweb_norm or nombre_evweb_norm == "revisar": return None
+    if not nombre_evweb_norm or nombre_evweb_norm in ["revisar", ""]: return None
     match_exacto = df_usuarios[df_usuarios['nombre_norm'] == nombre_evweb_norm]
     if not match_exacto.empty: return match_exacto.iloc[0]
     for _, usuario in df_usuarios.iterrows():
@@ -38,7 +38,6 @@ def obtener_tarifa_galeno(cod_practica, categoria_medico, df_vf):
     coincidencias_base = df_vf[df_vf['Código'].astype(str).str.strip() == cod_str]
     if coincidencias_base.empty: return 0.0
     
-    # Prioridad 1: Nomenclador GALENO
     df_galeno = coincidencias_base[coincidencias_base['Nomenclador'].astype(str).str.strip() == "Nomenclador GALENO"]
     if not df_galeno.empty:
         t_cat = df_galeno[df_galeno['Arancel'].astype(str).str.strip() == cat_str]
@@ -46,7 +45,6 @@ def obtener_tarifa_galeno(cod_practica, categoria_medico, df_vf):
         t_vf = df_galeno[df_galeno['Arancel'].astype(str).str.strip() == 'VF']
         if not t_vf.empty: return float(t_vf.sort_values(by='Periodo', ascending=False).iloc[0]['Total prestación'])
 
-    # Prioridad 2: Nomenclador Vacío
     df_vacio = coincidencias_base[coincidencias_base['Nomenclador'].isna() | (coincidencias_base['Nomenclador'].astype(str).str.strip() == "")]
     if not df_vacio.empty:
         t_cat = df_vacio[df_vacio['Arancel'].astype(str).str.strip() == cat_str]
@@ -54,35 +52,45 @@ def obtener_tarifa_galeno(cod_practica, categoria_medico, df_vf):
         t_vf = df_vacio[df_vacio['Arancel'].astype(str).str.strip() == 'VF']
         if not t_vf.empty: return float(t_vf.sort_values(by='Periodo', ascending=False).iloc[0]['Total prestación'])
 
-    # Prioridad 3: Caída libre
     t_cat = coincidencias_base[coincidencias_base['Arancel'].astype(str).str.strip() == cat_str]
     if not t_cat.empty: return float(t_cat.sort_values(by='Periodo', ascending=False).iloc[0]['Total prestación'])
     return float(coincidencias_base.sort_values(by='Periodo', ascending=False).iloc[0]['Total prestación'])
 
-# 2. BOT EXTRACTOR DIAGNÓSTICO (SINTAXIS BLINDADA PARA NUBE)
-def worker_extractor(lista_ids_chunk, worker_id, usuario, clave, modo_invisible):
-    mapeo_parcial = {}
+# Generador dinámico de bloques de 10 días para el mes en curso
+def generar_rangos_fechas():
+    hoy = datetime.now()
+    primer_dia = hoy.replace(day=1)
+    
+    # Bloques: 1 al 10, 11 al 20, 21 al 31 (o fin de mes)
+    ultimo_dia = (primer_dia + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+    
+    rangos = [
+        (primer_dia.strftime("%d/%m/%Y"), primer_dia.replace(day=10).strftime("%d/%m/%Y")),
+        (primer_dia.replace(day=11).strftime("%d/%m/%Y"), primer_dia.replace(day=20).strftime("%d/%m/%Y")),
+        (primer_dia.replace(day=21).strftime("%d/%m/%Y"), ultimo_dia.strftime("%d/%m/%Y"))
+    ]
+    return rangos
+
+# 2. BOT EXTRACTOR MASIVO (ESTRATEGIA B)
+def ejecutar_extractor_masivo(usuario, clave, modo_invisible, progreso_callback):
+    rangos = generar_rangos_fechas()
+    excels_descargados = []
+    
     with sync_playwright() as p:
         browser = p.chromium.launch(
-            headless=modo_invisible, 
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--single-process"
-            ]
+            headless=modo_invisible,
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
         )
         context = browser.new_context(viewport={"width": 1920, "height": 1080})
         page = context.new_page()
+        
         try:
-            # Fase 1: Login estable inicial
+            progreso_callback("🔑 Accediendo y autenticando en EVWEB...", 0.10)
             page.goto("https://cmsc.evweb.com.ar/Account/Login", timeout=60000)
             page.fill("input[name='UserName']", usuario)
             page.fill("#Password", clave)
             page.click("button[type='submit']")
             
-            # ⚡ CORRECCIÓN DE SINTAXIS: Uso de selectores encadenados nativos de Playwright para visibilidad
             menu_facturacion = page.locator("text=/Facturaci/i >> visible=true").first
             menu_facturacion.wait_for(state="visible", timeout=30000)
             menu_facturacion.click()
@@ -92,70 +100,81 @@ def worker_extractor(lista_ids_chunk, worker_id, usuario, clave, modo_invisible)
             menu_prestaciones.click()
             
             page.wait_for_load_state("domcontentloaded", timeout=20000)
-
-            # Fase 2: Bucle de extracción de datos
-            for id_transaccion in lista_ids_chunk:
-                id_str = str(id_transaccion).strip()
+            time.sleep(2)
+            
+            iframe_target = next((f for f in page.frames if f.locator("#body_cboObrasSociales").count() > 0), page.frames[1])
+            
+            # Recorrer e interactuar con los rangos de fechas definidos
+            for idx, (desde, hasta) in enumerate(rangos):
+                progreso_callback(f"📅 Extrayendo bloque {idx+1}/3: Desde {desde} hasta {hasta}...", 0.20 + (idx * 0.20))
+                
+                page.reload(wait_until="domcontentloaded")
+                time.sleep(2)
+                iframe_target = next((f for f in page.frames if f.locator("#body_cboObrasSociales").count() > 0), page.frames[1])
+                
+                # 1) Datos generales / Obra social
+                iframe_target.locator("#body_cboObrasSociales").select_option(label="10099 - GALENO Argentina S.A.  AZUL/BLANCO/ORO/PLATA")
+                
+                # 2) Estados / Estados de auditoria / Facturadas NO
+                iframe_target.locator("#body_cboEstados").select_option(label="APROBADO EN OBRA SOCIAL")
+                iframe_target.locator("#body_cboFiltroFacturado").select_option(value="N")
+                
+                # 3) Fechas rango dinámico
+                iframe_target.locator("#body_txtFechaCargaDesde").fill(desde)
+                iframe_target.locator("#body_txtFechaCargaHasta").fill(hasta)
+                
+                # Clic en buscar
+                iframe_target.locator("#body_btnFiltro").click()
+                time.sleep(5) # Tiempo de procesamiento del servidor ASP
+                
+                # Validar si existen registros en el bloque actual
+                if "No Hay Registros" in iframe_target.locator("table").inner_text():
+                    continue
+                
+                # Paginación completa: Mostrar "TODAS"
                 try:
-                    page.reload(wait_until="domcontentloaded")
-                    time.sleep(1.5)
-                    
-                    iframe_target = next((f for f in page.frames if f.locator("#body_txtNroAutorizacion").count() > 0), page.frames[1])
-                    input_autorizacion = iframe_target.locator("#body_txtNroAutorizacion")
-                    input_autorizacion.wait_for(state="attached", timeout=15000)
-                    
-                    iframe_target.evaluate("""() => {
-                        let input = document.getElementById("body_txtNroAutorizacion");
-                        if (input) {
-                            let parent = input.parentElement;
-                            while (parent) {
-                                if (parent.classList.contains('collapse')) parent.classList.add('show');
-                                if (parent.style.display === 'none') parent.style.display = 'block';
-                                parent = parent.parentElement;
-                            }
-                        }
-                        let cboE = document.getElementById("body_cboEstados");
-                        if (cboE) { cboE.selectedIndex = -1; cboE.value = ""; }
-                        let cboF = document.getElementById("body_cboFiltroFacturado");
-                        if (cboF) { cboF.selectedIndex = -1; cboF.value = ""; }
-                    }""")
-
-                    input_autorizacion.fill(id_str)
-                    iframe_target.locator("#body_btnFiltro").click()
-                    time.sleep(4.5) 
-                    
-                    filas = iframe_target.locator("table tr").all()
-                    if len(filas) <= 1 or "No Hay Registros" in iframe_target.locator("table").inner_text():
-                        mapeo_parcial[id_transaccion] = {"Profesional": "revisar", "Matricula": "revisar"}
-                    else:
-                        texto_fila = filas[1].inner_text().strip().split('\t')
-                        mapeo_parcial[id_transaccion] = {"Profesional": texto_fila[0].strip(), "Matricula": texto_fila[1].strip()}
+                    select_paginas = iframe_target.locator("select[name*='Paginas']").first
+                    if select_paginas.count() > 0:
+                        select_paginas.select_option(text="TODAS")
+                        time.sleep(4)
                 except:
-                    mapeo_parcial[id_transaccion] = {"Profesional": "revisar", "Matricula": "revisar"}
+                    pass
+                
+                # Clic en botón hamburguesa y exportar a Excel
+                try:
+                    iframe_target.locator(".btn-group .dropdown-toggle").click() # Botón hamburguesa
+                    time.sleep(1)
+                    
+                    with page.expect_download(timeout=40000) as download_info:
+                        iframe_target.get_by_text("Exportar prácticas excel").click()
+                    
+                    download = download_info.value
+                    path = download.path()
+                    
+                    # Guardamos el archivo exportado en la lista local temporal
+                    df_temp = pd.read_excel(path)
+                    excels_descargados.append(df_temp)
+                except Exception as e:
+                    st.warning(f"⚠️ No se pudo exportar el bloque de fechas {desde} - {hasta}: {str(e)}")
                     continue
                     
         except Exception as e:
-            try:
-                screenshot_bytes = page.screenshot(type="png")
-            except:
-                screenshot_bytes = None
-            return {"data": {}, "error": str(e), "screenshot": screenshot_bytes}
+            raise Exception(f"Fallo estructural en interacción web: {str(e)}")
         finally:
             browser.close()
             
-    return {"data": mapeo_parcial, "error": None, "screenshot": None}
+    return excels_descargados
 
-# 3. INTERFAZ Y RECOLECCIÓN DE PARÁMETROS (SIDEBAR)
-st.sidebar.header("🔒 Credenciales e Infraestructura")
-usuario_evweb = st.sidebar.text_input("Usuario EVWEB", placeholder="Ingrese su usuario")
-clave_evweb = st.sidebar.text_input("Contraseña EVWEB", type="password", placeholder="Ingrese su clave")
+# 3. INTERFAZ EN SECCIÓN LATERAL (SIDEBAR)
+st.sidebar.header("🔒 Credenciales de Acceso")
+usuario_evweb = st.sidebar.text_input("Usuario EVWEB", placeholder="Tipee su usuario")
+clave_evweb = st.sidebar.text_input("Contraseña EVWEB", type="password", placeholder="Tipee su clave")
 
 st.sidebar.markdown("---")
-st.sidebar.header("⚡ Ajustes de Rendimiento")
-cant_navegadores = st.sidebar.slider("Navegadores simultáneos", min_value=1, max_value=6, value=1)
-modo_oculto = st.sidebar.checkbox("Ejecutar en modo invisible (Más rápido)", value=True)
+st.sidebar.header("⚙️ Entorno de Ejecución")
+modo_oculto = st.sidebar.checkbox("Ejecutar en modo invisible (Recomendado para nube)", value=True)
 
-# 4. ÁREA PRINCIPAL: DRAG & DROP DE ARCHIVOS
+# 4. ÁREA PRINCIPAL: DRAG & DROP
 col1, col2 = st.columns(2)
 with col1:
     archivo_facturacion = st.file_uploader("📥 Subir planilla de Facturación (Libro9)", type=["xlsx"])
@@ -163,76 +182,64 @@ with col2:
     archivo_valores = st.file_uploader("📥 Subir Base de Valores (Galeno)", type=["xlsx"])
 
 if archivo_facturacion and archivo_valores:
-    st.success("✅ Ambos archivos fueron cargados correctamente.")
+    st.success("✅ Estructuras base cargadas.")
     
-    if st.button("🚀 Iniciar Procesamiento Masivo", type="primary"):
+    if st.button("🚀 Ejecutar Auditoría Estrategia Masiva", type="primary"):
         if not usuario_evweb or not clave_evweb:
-            st.error("❌ Por favor, complete sus credenciales de EVWEB en la barra lateral antes de continuar.")
+            st.error("❌ Complete los datos de credenciales requeridos en el panel lateral.")
         else:
-            with st.spinner("Procesando lote en servidores web..."):
+            status_container = st.empty()
+            bar_container = st.progress(0)
+            
+            def actualizar_progreso(texto, porcentaje):
+                status_container.text(texto)
+                bar_container.progress(porcentaje)
+                
+            try:
+                # Ejecutar descargas agrupadas
+                archivos_excel = ejecutar_extractor_masivo(usuario_evweb, clave_evweb, modo_oculto, actualizar_progreso)
+                
+                if not archivos_excel:
+                    st.error("❌ No se encontraron registros aprobados pendientes de facturación para Galeno en este mes.")
+                    st.stop()
+                    
+                actualizar_progreso("📊 Unificando reportes y aplicando matriz de cálculo...", 0.85)
+                
+                # Consolidación de descargas en un único dataframe de búsqueda masiva
+                df_maestro_evweb = pd.concat(archivos_excel, ignore_index=True)
+                
+                # Limpieza y normalización de claves de cruce
+                # Modificar los nombres de las columnas si en el Excel exportado figuran distinto
+                df_maestro_evweb['Nro. Autorización'] = df_maestro_evweb['Nro. Autorización'].astype(str).str.strip()
+                
+                # Carga de aranceles locales
                 df_importado = pd.read_excel(archivo_facturacion)
                 df_usuarios = pd.read_excel(archivo_valores, sheet_name="Usuarios")
                 df_vf = pd.read_excel(archivo_valores, sheet_name="VF")
                 
-                lista_ids = df_importado['Id Transacción'].tolist()
-                total_filas = len(lista_ids)
-                
-                st.info(f"📋 Total de registros a auditar: {total_filas} transacciones.")
-                
-                progreso_bar = st.progress(0)
-                status_text = st.empty()
-                
-                status_text.text("🔥 Abriendo instancias de hardware en paralelo...")
-                chunks = [lista_ids[i::cant_navegadores] for i in range(cant_navegadores)]
-                
-                tiempo_inicio = time.time()
-                datos_scraped_totales = {}
-                hubo_errores_globales = False
-                
-                with ThreadPoolExecutor(max_workers=cant_navegadores) as executor:
-                    futuros = [
-                        executor.submit(worker_extractor, chunks[i], i+1, usuario_evweb, clave_evweb, modo_oculto)
-                        for i in range(cant_navegadores)
-                    ]
-                    
-                    for idx, f in enumerate(futuros):
-                        resultado = f.result()
-                        if resultado.get("error"):
-                            hubo_errores_globales = True
-                            st.error(f"❌ El Navegador {idx+1} no pudo iniciar sesión: {resultado['error']}")
-                            if resultado.get("screenshot"):
-                                st.image(resultado["screenshot"], caption=f"Captura de pantalla del Servidor - Navegador {idx+1}")
-                        else:
-                            datos_scraped_totales.update(resultado["data"])
-                            
-                        progreso_bar.progress((idx + 1) / cant_navegadores)
-                        status_text.text(f"⏳ Evaluando hilos de procesamiento...")
-
-                if hubo_errores_globales and not datos_scraped_totales:
-                    st.stop()
-
-                progreso_bar.progress(1.0)
-                status_text.text("✅ Procesando matriz de cálculo de aranceles...")
-                
+                # Construcción del dataframe final
                 df_final = df_importado.copy()
-                df_final['matricula'] = ""
+                df_final['Id Transacción'] = df_final['Id Transacción'].astype(str).str.strip()
+                
+                # Mapeo directo indexado (Cruce masivo instantáneo en memoria)
+                # Creamos diccionarios de mapeo desde el Excel consolidado de EVWEB
+                mapeo_profesional = dict(zip(df_maestro_evweb['Nro. Autorización'], df_maestro_evweb['Profesional Prescriptor']))
+                mapeo_matricula = dict(zip(df_maestro_evweb['Nro. Autorización'], df_maestro_evweb['Matrícula Prescriptor']))
+                
+                df_final['profesional'] = df_final['Id Transacción'].map(mapeo_profesional).fillna("revisar")
+                df_final['matricula'] = df_final['Id Transacción'].map(mapeo_matricula).fillna("revisar")
+                
                 df_final['categoría'] = ""
-                df_final['profesional'] = ""
                 df_final['especialidad'] = ""
                 df_final['Valor'] = 0.0
                 df_final['total'] = 0.0
                 
-                for id_tx, datos in datos_scraped_totales.items():
-                    df_final.loc[df_final['Id Transacción'] == id_tx, 'profesional'] = datos['Profesional']
-                    df_final.loc[df_final['Id Transacción'] == id_tx, 'matricula'] = datos['Matricula']
-
                 df_usuarios['nombre_norm'] = df_usuarios['Nombre'].apply(normalizar_cadena)
                 
+                # Cascada de valorización arancelaria tradicional
                 for idx, fila in df_final.iterrows():
                     medico_evweb = fila['profesional']
-                    if medico_evweb == "revisar" or not medico_evweb:
-                        df_final.at[idx, 'categoría'] = "revisar"
-                        df_final.at[idx, 'especialidad'] = "revisar"
+                    if medico_evweb == "revisar":
                         continue
                         
                     medico_match = buscar_coincidencia_medico(medico_evweb, df_usuarios)
@@ -246,11 +253,13 @@ if archivo_facturacion and archivo_valores:
                     else:
                         df_final.at[idx, 'categoría'] = "no encontrado"
                         df_final.at[idx, 'especialidad'] = "no encontrado"
-
+                        
                 df_final['total'] = df_final['Valor'] * df_final['Cant. Tratamientos']
                 
-                tiempo_total = time.time() - tiempo_inicio
-                st.success(f"🎉 ¡Proceso finalizado en {tiempo_total/60:.2f} minutos!")
+                bar_container.progress(1.0)
+                status_container.text("✅ Auditoría completada con éxito.")
+                st.success("🎉 ¡Proceso finalizado de forma masiva!")
+                
                 st.dataframe(df_final[['Id Transacción', 'Practi. Presta', 'profesional', 'categoría', 'Valor', 'total']].head(10))
                 
                 output = io.BytesIO()
@@ -260,7 +269,4 @@ if archivo_facturacion and archivo_valores:
                 
                 st.download_button(
                     label="📥 Descargar Reporte Valorizado Final (Excel)",
-                    data=excel_data,
-                    file_name="auditoria_final_galeno.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+                    data=excel
