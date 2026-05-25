@@ -56,11 +56,9 @@ def obtener_tarifa_galeno(cod_practica, categoria_medico, df_vf):
     if not t_cat.empty: return float(t_cat.sort_values(by='Periodo', ascending=False).iloc[0]['Total prestación'])
     return float(coincidencias_base.sort_values(by='Periodo', ascending=False).iloc[0]['Total prestación'])
 
-# Generador dinámico de bloques de 10 días para el mes en curso
 def generar_rangos_fechas():
     hoy = datetime.now()
     primer_dia = hoy.replace(day=1)
-    
     ultimo_dia = (primer_dia + timedelta(days=32)).replace(day=1) - timedelta(days=1)
     
     rangos = [
@@ -70,7 +68,7 @@ def generar_rangos_fechas():
     ]
     return rangos
 
-# 2. BOT EXTRACTOR MASIVO (ESTRATEGIA B)
+# 2. BOT EXTRACTOR MASIVO DIAGNÓSTICO (RETORNA MAPEO CON FOTO SI HAY ERROR)
 def ejecutar_extractor_masivo(usuario, clave, modo_invisible, progreso_callback):
     rangos = generar_rangos_fechas()
     excels_descargados = []
@@ -90,18 +88,18 @@ def ejecutar_extractor_masivo(usuario, clave, modo_invisible, progreso_callback)
             page.fill("#Password", clave)
             page.click("button[type='submit']")
             
-            menu_facturacion = page.locator("text=/Facturaci/i >> visible=true").first
+            # Buscador seguro usando el texto directo sin expresiones regulares conflictivas
+            menu_facturacion = page.get_by_text("Facturaci", exact=False).first
             menu_facturacion.wait_for(state="visible", timeout=30000)
             menu_facturacion.click()
             
-            menu_prestaciones = page.locator("text=/prestaci/i >> visible=true").first
+            menu_prestaciones = page.get_by_text("prestaci", exact=False).first
             menu_prestaciones.wait_for(state="visible", timeout=20000)
             menu_prestaciones.click()
             
             page.wait_for_load_state("domcontentloaded", timeout=20000)
             time.sleep(2)
             
-            # Recorrer e interactuar con los rangos de fechas definidos
             for idx, (desde, hasta) in enumerate(rangos):
                 progreso_callback(f"📅 Extrayendo bloque {idx+1}/3: Desde {desde} hasta {hasta}...", 0.20 + (idx * 0.20))
                 
@@ -109,26 +107,19 @@ def ejecutar_extractor_masivo(usuario, clave, modo_invisible, progreso_callback)
                 time.sleep(2)
                 iframe_target = next((f for f in page.frames if f.locator("#body_cboObrasSociales").count() > 0), page.frames[1])
                 
-                # 1) Datos generales / Obra social
                 iframe_target.locator("#body_cboObrasSociales").select_option(label="10099 - GALENO Argentina S.A.  AZUL/BLANCO/ORO/PLATA")
-                
-                # 2) Estados / Estados de auditoria / Facturadas NO
                 iframe_target.locator("#body_cboEstados").select_option(label="APROBADO EN OBRA SOCIAL")
                 iframe_target.locator("#body_cboFiltroFacturado").select_option(value="N")
                 
-                # 3) Fechas rango dinámico
                 iframe_target.locator("#body_txtFechaCargaDesde").fill(desde)
                 iframe_target.locator("#body_txtFechaCargaHasta").fill(hasta)
                 
-                # Clic en buscar
                 iframe_target.locator("#body_btnFiltro").click()
                 time.sleep(5)
                 
-                # Validar si existen registros en el bloque actual
                 if "No Hay Registros" in iframe_target.locator("table").inner_text():
                     continue
                 
-                # Paginación completa: Mostrar "TODAS"
                 try:
                     select_paginas = iframe_target.locator("select[name*='Paginas']").first
                     if select_paginas.count() > 0:
@@ -137,7 +128,6 @@ def ejecutar_extractor_masivo(usuario, clave, modo_invisible, progreso_callback)
                 except:
                     pass
                 
-                # Clic en botón hamburguesa y exportar a Excel
                 try:
                     iframe_target.locator(".btn-group .dropdown-toggle").click()
                     time.sleep(1)
@@ -154,12 +144,17 @@ def ejecutar_extractor_masivo(usuario, clave, modo_invisible, progreso_callback)
                     st.warning(f"⚠️ No se pudo exportar el bloque de fechas {desde} - {hasta}: {str(e)}")
                     continue
                     
+            return {"excels": excels_descargados, "error": None, "screenshot": None}
+            
         except Exception as e:
-            raise Exception(f"Fallo estructural en interacción web: {str(e)}")
+            # Captura de pantalla inmediata del error antes de cerrar el motor Chromium
+            try:
+                screenshot_bytes = page.screenshot(type="png")
+            except:
+                screenshot_bytes = None
+            return {"excels": [], "error": str(e), "screenshot": screenshot_bytes}
         finally:
             browser.close()
-            
-    return excels_descargados
 
 # 3. INTERFAZ EN SECCIÓN LATERAL (SIDEBAR)
 st.sidebar.header("🔒 Credenciales de Acceso")
@@ -191,13 +186,22 @@ if archivo_facturacion and archivo_valores:
                 status_container.text(texto)
                 bar_container.progress(porcentaje)
                 
-            try:
-                archivos_excel = ejecutar_extractor_masivo(usuario_evweb, clave_evweb, modo_oculto, actualizar_progreso)
+            # Ejecutar descargas agrupadas
+            resultado_web = ejecutar_extractor_masivo(usuario_evweb, clave_evweb, modo_oculto, actualizar_progreso)
+            
+            # Si el retorno contiene un error, se renderiza la imagen capturada en la interfaz web
+            if resultado_web["error"] is not None:
+                st.error(f"❌ Error de Automatización: {resultado_web['error']}")
+                if resultado_web["screenshot"] is not None:
+                    st.image(resultado_web["screenshot"], caption="Evidencia del Servidor al momento del Timeout")
+                st.stop()
                 
-                if not archivos_excel:
-                    st.error("❌ No se encontraron registros aprobados pendientes de facturación para Galeno en este mes.")
-                    st.stop()
-                    
+            archivos_excel = resultado_web["excels"]
+            if not archivos_excel:
+                st.error("❌ No se encontraron registros aprobados pendientes de facturación para Galeno en este mes.")
+                st.stop()
+                
+            try:
                 actualizar_progreso("📊 Unificando reportes y aplicando matriz de cálculo...", 0.85)
                 
                 df_maestro_evweb = pd.concat(archivos_excel, ignore_index=True)
