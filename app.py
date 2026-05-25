@@ -11,7 +11,7 @@ import io
 # 👑 CONFIGURACIÓN ESTÉTICA DE LA PÁGINA
 st.set_page_config(page_title="Procesador Galeno", page_icon="🚀", layout="wide")
 
-st.title("🚀 Procesador Inteligente de Facturación - GALENO (Edición Ultra-Velocidad)")
+st.title("🚀 Procesador Inteligente de Facturación - GALENO")
 st.markdown("Cargá las planillas de facturación y las bases de aranceles para ejecutar la auditoría automatizada en tiempo real.")
 st.markdown("---")
 
@@ -59,11 +59,21 @@ def obtener_tarifa_galeno(cod_practica, categoria_medico, df_vf):
     if not t_cat.empty: return float(t_cat.sort_values(by='Periodo', ascending=False).iloc[0]['Total prestación'])
     return float(coincidencias_base.sort_values(by='Periodo', ascending=False).iloc[0]['Total prestación'])
 
-# 2. BOT EXTRACTOR SEGURO (CON PAUSA SÍNCRONA DE ESTABILIDAD)
+# 2. BOT EXTRACTOR SEGURO (OPTIMIZADO PARA DOCKER/RAILWAY)
 def worker_extractor(lista_ids_chunk, worker_id, usuario, clave, modo_invisible):
     mapeo_parcial = {}
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=modo_invisible, args=["--start-maximized"])
+        # ⚡ OPTIMIZACIÓN EN LA NUBE: Flags críticos para evitar colapsos por memoria RAM en Railway
+        browser = p.chromium.launch(
+            headless=modo_invisible, 
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--single-process"
+            ]
+        )
         context = browser.new_context(viewport={"width": 1920, "height": 1080})
         page = context.new_page()
         try:
@@ -142,7 +152,8 @@ clave_evweb = st.sidebar.text_input("Contraseña EVWEB", type="password", placeh
 
 st.sidebar.markdown("---")
 st.sidebar.header("⚡ Ajustes de Rendimiento")
-cant_navegadores = st.sidebar.slider("Navegadores simultáneos", min_value=1, max_value=12, value=3)
+# ⚠️ RECOMENDACIÓN EN NUBE: El valor por defecto se fija en 2 para cuidar los límites del plan de Railway
+cant_navegadores = st.sidebar.slider("Navegadores simultáneos", min_value=1, max_value=6, value=2)
 modo_oculto = st.sidebar.checkbox("Ejecutar en modo invisible (Más rápido)", value=True)
 
 # 4. ÁREA PRINCIPAL: DRAG & DROP DE ARCHIVOS
@@ -190,7 +201,7 @@ if archivo_facturacion and archivo_valores:
                         status_text.text(f"⏳ Auditados {len(datos_scraped_totales)} de {total_filas} registros...")
 
                 progreso_bar.progress(1.0)
-                status_text.text("✅ Extracción Web completada. Applying arancel matrix...")
+                status_text.text("✅ Extracción Web completada. Aplicando matriz de cálculo de aranceles...")
                 
                 df_final = df_importado.copy()
                 df_final['matricula'] = ""
