@@ -127,4 +127,4 @@ def worker_extractor(lista_ids_chunk, worker_id, usuario, clave, modo_invisible)
                     if len(filas) <= 1 or "No Hay Registros" in iframe_target.locator("table").inner_text():
                         mapeo_parcial[id_transaccion] = {"Profesional": "revisar", "Matricula": "revisar"}
                     else:
-                        texto_fila = filas[1].inner_text().strip().
+                        texto_fila = filas[1].inner_text().strip().split('\t')
