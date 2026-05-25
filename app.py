@@ -61,7 +61,6 @@ def generar_rangos_fechas():
     hoy = datetime.now()
     primer_dia = hoy.replace(day=1)
     
-    # Bloques: 1 al 10, 11 al 20, 21 al 31 (o fin de mes)
     ultimo_dia = (primer_dia + timedelta(days=32)).replace(day=1) - timedelta(days=1)
     
     rangos = [
@@ -102,8 +101,6 @@ def ejecutar_extractor_masivo(usuario, clave, modo_invisible, progreso_callback)
             page.wait_for_load_state("domcontentloaded", timeout=20000)
             time.sleep(2)
             
-            iframe_target = next((f for f in page.frames if f.locator("#body_cboObrasSociales").count() > 0), page.frames[1])
-            
             # Recorrer e interactuar con los rangos de fechas definidos
             for idx, (desde, hasta) in enumerate(rangos):
                 progreso_callback(f"📅 Extrayendo bloque {idx+1}/3: Desde {desde} hasta {hasta}...", 0.20 + (idx * 0.20))
@@ -125,7 +122,7 @@ def ejecutar_extractor_masivo(usuario, clave, modo_invisible, progreso_callback)
                 
                 # Clic en buscar
                 iframe_target.locator("#body_btnFiltro").click()
-                time.sleep(5) # Tiempo de procesamiento del servidor ASP
+                time.sleep(5)
                 
                 # Validar si existen registros en el bloque actual
                 if "No Hay Registros" in iframe_target.locator("table").inner_text():
@@ -142,7 +139,7 @@ def ejecutar_extractor_masivo(usuario, clave, modo_invisible, progreso_callback)
                 
                 # Clic en botón hamburguesa y exportar a Excel
                 try:
-                    iframe_target.locator(".btn-group .dropdown-toggle").click() # Botón hamburguesa
+                    iframe_target.locator(".btn-group .dropdown-toggle").click()
                     time.sleep(1)
                     
                     with page.expect_download(timeout=40000) as download_info:
@@ -151,7 +148,6 @@ def ejecutar_extractor_masivo(usuario, clave, modo_invisible, progreso_callback)
                     download = download_info.value
                     path = download.path()
                     
-                    # Guardamos el archivo exportado en la lista local temporal
                     df_temp = pd.read_excel(path)
                     excels_descargados.append(df_temp)
                 except Exception as e:
@@ -196,7 +192,6 @@ if archivo_facturacion and archivo_valores:
                 bar_container.progress(porcentaje)
                 
             try:
-                # Ejecutar descargas agrupadas
                 archivos_excel = ejecutar_extractor_masivo(usuario_evweb, clave_evweb, modo_oculto, actualizar_progreso)
                 
                 if not archivos_excel:
@@ -205,24 +200,16 @@ if archivo_facturacion and archivo_valores:
                     
                 actualizar_progreso("📊 Unificando reportes y aplicando matriz de cálculo...", 0.85)
                 
-                # Consolidación de descargas en un único dataframe de búsqueda masiva
                 df_maestro_evweb = pd.concat(archivos_excel, ignore_index=True)
-                
-                # Limpieza y normalización de claves de cruce
-                # Modificar los nombres de las columnas si en el Excel exportado figuran distinto
                 df_maestro_evweb['Nro. Autorización'] = df_maestro_evweb['Nro. Autorización'].astype(str).str.strip()
                 
-                # Carga de aranceles locales
                 df_importado = pd.read_excel(archivo_facturacion)
                 df_usuarios = pd.read_excel(archivo_valores, sheet_name="Usuarios")
                 df_vf = pd.read_excel(archivo_valores, sheet_name="VF")
                 
-                # Construcción del dataframe final
                 df_final = df_importado.copy()
                 df_final['Id Transacción'] = df_final['Id Transacción'].astype(str).str.strip()
                 
-                # Mapeo directo indexado (Cruce masivo instantáneo en memoria)
-                # Creamos diccionarios de mapeo desde el Excel consolidado de EVWEB
                 mapeo_profesional = dict(zip(df_maestro_evweb['Nro. Autorización'], df_maestro_evweb['Profesional Prescriptor']))
                 mapeo_matricula = dict(zip(df_maestro_evweb['Nro. Autorización'], df_maestro_evweb['Matrícula Prescriptor']))
                 
@@ -236,7 +223,6 @@ if archivo_facturacion and archivo_valores:
                 
                 df_usuarios['nombre_norm'] = df_usuarios['Nombre'].apply(normalizar_cadena)
                 
-                # Cascada de valorización arancelaria tradicional
                 for idx, fila in df_final.iterrows():
                     medico_evweb = fila['profesional']
                     if medico_evweb == "revisar":
@@ -269,4 +255,10 @@ if archivo_facturacion and archivo_valores:
                 
                 st.download_button(
                     label="📥 Descargar Reporte Valorizado Final (Excel)",
-                    data=excel
+                    data=excel_data,
+                    file_name="auditoria_masiva_galeno.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                
+            except Exception as e:
+                st.error(f"❌ Ocurrió un error en el procesamiento masivo: {str(e)}")
