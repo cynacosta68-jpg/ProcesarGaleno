@@ -12,7 +12,7 @@ import io
 st.set_page_config(page_title="Procesador Galeno", page_icon="🚀", layout="wide")
 
 st.title("🚀 Procesador Inteligente de Facturación - GALENO")
-st.markdown("Cargá las planillas de facturación y las bases de aranceles para ejecutar la auditoría automatizada en tiempo real.")
+st.markdown("Cargá las planillas de facturación y las bases de aranceles para ejecutar la auditoría automatizada en tempo real.")
 st.markdown("---")
 
 # 1. FUNCIONES AUXILIARES GENERALES
@@ -59,7 +59,7 @@ def obtener_tarifa_galeno(cod_practica, categoria_medico, df_vf):
     if not t_cat.empty: return float(t_cat.sort_values(by='Periodo', ascending=False).iloc[0]['Total prestación'])
     return float(coincidencias_base.sort_values(by='Periodo', ascending=False).iloc[0]['Total prestación'])
 
-# 2. BOT EXTRACTOR DIAGNÓSTICO (CAPTURA FOTOS EN CASO DE ERROR)
+# 2. BOT EXTRACTOR DIAGNÓSTICO (SINTAXIS BLINDADA PARA NUBE)
 def worker_extractor(lista_ids_chunk, worker_id, usuario, clave, modo_invisible):
     mapeo_parcial = {}
     with sync_playwright() as p:
@@ -76,18 +76,18 @@ def worker_extractor(lista_ids_chunk, worker_id, usuario, clave, modo_invisible)
         context = browser.new_context(viewport={"width": 1920, "height": 1080})
         page = context.new_page()
         try:
-            # Fase 1: Login e ingreso al módulo
+            # Fase 1: Login estable inicial
             page.goto("https://cmsc.evweb.com.ar/Account/Login", timeout=60000)
             page.fill("input[name='UserName']", usuario)
             page.fill("#Password", clave)
             page.click("button[type='submit']")
             
-            # Espera y clicks del menú
-            menu_facturacion = page.get_by_text(re.compile(r"Facturaci", re.IGNORECASE)).filter(visible=True).first
+            # ⚡ CORRECCIÓN DE SINTAXIS: Uso de selectores encadenados nativos de Playwright para visibilidad
+            menu_facturacion = page.locator("text=/Facturaci/i >> visible=true").first
             menu_facturacion.wait_for(state="visible", timeout=30000)
             menu_facturacion.click()
             
-            menu_prestaciones = page.get_by_text(re.compile(r"prestaci", re.IGNORECASE)).filter(visible=True).first
+            menu_prestaciones = page.locator("text=/prestaci/i >> visible=true").first
             menu_prestaciones.wait_for(state="visible", timeout=20000)
             menu_prestaciones.click()
             
@@ -135,7 +135,6 @@ def worker_extractor(lista_ids_chunk, worker_id, usuario, clave, modo_invisible)
                     continue
                     
         except Exception as e:
-            # 📸 SI CORTA ACÁ: Saca una foto de la pantalla del servidor y la manda a la interfaz
             try:
                 screenshot_bytes = page.screenshot(type="png")
             except:
@@ -153,7 +152,6 @@ clave_evweb = st.sidebar.text_input("Contraseña EVWEB", type="password", placeh
 
 st.sidebar.markdown("---")
 st.sidebar.header("⚡ Ajustes de Rendimiento")
-# Recomendado en 1 o 2 hilos para la prueba de diagnóstico en la nube
 cant_navegadores = st.sidebar.slider("Navegadores simultáneos", min_value=1, max_value=6, value=1)
 modo_oculto = st.sidebar.checkbox("Ejecutar en modo invisible (Más rápido)", value=True)
 
