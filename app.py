@@ -318,14 +318,37 @@ def ejecutar_extractor(usuario, clave, modo_invisible, rangos, progreso_callback
                 iframe.locator("#body_cboFiltroFacturado").select_option(value="NO")
                 time.sleep(1.5)
 
-                # Fechas dinámicas
+
+                # ── Fechas dinámicas — triple método para headless ────────
+                def set_fecha(locator, valor):
+                    """Llena un campo de fecha con 3 métodos para garantizar
+                    que el valor se aplica correctamente en modo headless."""
+                    locator.wait_for(state="visible", timeout=10000)
+                    # Método 1: triple click + type (simula escritura real)
+                    locator.triple_click()
+                    locator.type(valor, delay=80)
+                    time.sleep(0.3)
+                    # Verificar — si no quedó bien, método 2: JS directo
+                    actual = locator.input_value()
+                    if actual != valor:
+                        locator.evaluate(
+                            f"el => {{ el.value = '{valor}'; "
+                            f"el.dispatchEvent(new Event('change', {{bubbles:true}})); "
+                            f"el.dispatchEvent(new Event('input', {{bubbles:true}})); }}"
+                        )
+                        time.sleep(0.3)
+                    # Método 3: press_sequentially como último recurso
+                    actual = locator.input_value()
+                    if actual != valor:
+                        locator.triple_click()
+                        locator.press_sequentially(valor, delay=100)
+                    time.sleep(0.3)
+
                 inp_desde = iframe.locator("#body_txtFiltroFechaCargaDesde")
-                inp_desde.click()
-                inp_desde.fill(desde)
-                time.sleep(0.5)
+                set_fecha(inp_desde, desde)
+
                 inp_hasta = iframe.locator("#body_txtFiltroFechaCargaHasta")
-                inp_hasta.click()
-                inp_hasta.fill(hasta)
+                set_fecha(inp_hasta, hasta)
                 time.sleep(1)
 
                 iframe.locator("#body_btnFiltro").click()
