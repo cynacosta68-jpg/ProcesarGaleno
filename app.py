@@ -567,124 +567,182 @@ st.markdown("---")
 archivos_ok = archivo_facturacion and archivo_valores
 fechas_ok   = fecha_inicio and fecha_fin and fecha_fin >= fecha_inicio
 
+# ── Estado global del job (sobrevive reconexiones de Streamlit) ──────────
+# Usamos un dict global indexado por job_id para que el thread de fondo
+# pueda escribir resultados aunque el WebSocket se reconecte.
+import threading, uuid
+if '_jobs' not in st.session_state:
+    st.session_state['_jobs'] = {}
+
+def _job_store():
+    """Referencia al dict global de jobs de esta sesión."""
+    return st.session_state['_jobs']
+
+def mostrar_resultado(job):
+    """Renderiza resultados una vez que el job terminó."""
+    if job.get('error'):
+        st.error(f"Error en EVWEB: {job['error']}")
+        return
+
+    excels_web = job.get('excels', [])
+    if not excels_web:
+        st.error("No se obtuvieron registros aprobados en el período seleccionado.")
+        return
+
+    try:
+        df_val, col_id, logs_proceso = procesar_datos(
+            excels_web,
+            job['archivo_facturacion'],
+            job['archivo_valores'],
+        )
+
+        st.markdown(
+            "<small style='color:#6fcf97;letter-spacing:.06em'>Proceso completado ✓</small>",
+            unsafe_allow_html=True,
+        )
+
+        # Diagnóstico opcional
+        if job.get('mostrar_debug') and logs_proceso:
+            st.markdown("---")
+            st.markdown('<p class="label-section">Diagnóstico de cruces</p>', unsafe_allow_html=True)
+            log_html = "".join(
+                f'<div style="margin:2px 0"><span style="color:#444">›</span> '
+                f'<span style="color:#888">{l}</span></div>'
+                for l in logs_proceso
+            )
+            st.markdown(f'<div class="diag-box">{log_html}</div>', unsafe_allow_html=True)
+
+        # Vista previa
+        st.markdown("---")
+        cols_vista = [
+            col_id, 'Fecha Transacción', 'Apellido y Nombre Socio',
+            'Practi. Presta', 'Descripción Práctica', 'Cant. Tratamientos',
+            'profesional', 'matricula', 'especialidad',
+            'categoria', 'valor_unit', 'total',
+        ]
+        cols_vista = [c for c in cols_vista if c in df_val.columns]
+        st.markdown(
+            f'<div class="label-section">Vista previa — {len(df_val)} registros'
+            f' · el Excel descargado incluye todas las columnas del archivo importado</div>',
+            unsafe_allow_html=True,
+        )
+        st.dataframe(df_val[cols_vista], use_container_width=True, hide_index=True)
+
+        # Métricas
+        m1, m2, m3, m4 = st.columns(4)
+        total_val  = df_val['total'].sum()
+        ok_match   = (df_val['categoria'].str.strip().isin(['A','B','C','R'])).sum()
+        sin_match  = (df_val['categoria'].isin(['revisar','no encontrado',''])).sum()
+        con_tarifa = (df_val['valor_unit'] > 0).sum()
+        m1.metric("Total valorizado",  f"$ {total_val:,.2f}")
+        m2.metric("Cruzados OK",        ok_match)
+        m3.metric("Con tarifa",         con_tarifa)
+        m4.metric("Requieren revisión", sin_match)
+
+        # Descarga
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df_val.to_excel(writer, index=False, sheet_name="Valorizado")
+        output.seek(0)
+
+        f_ini = job['fecha_inicio']
+        f_fin = job['fecha_fin']
+        st.markdown("---")
+        st.download_button(
+            label="Descargar Excel valorizado",
+            data=output.getvalue(),
+            file_name=f"galeno_{f_ini}_{f_fin}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+
+    except Exception as e:
+        st.error(f"Error en cruce de datos: {e}")
+        import traceback
+        st.code(traceback.format_exc(), language="text")
+
+
 if archivos_ok and fechas_ok:
     rangos_final = generar_rangos_9_dias(fecha_inicio, fecha_fin)
+    jobs = _job_store()
+    job_id = st.session_state.get('job_id')
 
-    if st.button(
-        f"Iniciar auditoría  ·  {len(rangos_final)} tramo{'s' if len(rangos_final) != 1 else ''}",
-        type="primary",
-        use_container_width=True,
-    ):
-        if not usuario_evweb or not clave_evweb:
-            st.error("Ingrese las credenciales en el panel lateral.")
-        else:
-            status = st.empty()
-            barra  = st.progress(0)
+    # ── Si ya hay un job activo, mostrarlo ───────────────────────────────
+    if job_id and job_id in jobs:
+        job = jobs[job_id]
+        status_txt, pct = job.get('progress', ("Iniciando…", 0.0))
 
-            def actualizar(texto, pct):
-                status.markdown(
-                    f"<small style='color:#666;letter-spacing:.06em'>{texto}</small>",
-                    unsafe_allow_html=True,
-                )
-                barra.progress(min(pct, 1.0))
-
-            # ── Extracción web ───────────────────────────────────────
-            resultado = ejecutar_extractor(
-                usuario_evweb, clave_evweb,
-                modo_oculto, rangos_final, actualizar,
+        if job['status'] == 'running':
+            st.markdown(
+                f"<small style='color:#666;letter-spacing:.06em'>{status_txt}</small>",
+                unsafe_allow_html=True,
             )
+            st.progress(min(pct, 0.99))
+            st.caption("El proceso corre en segundo plano — podés cerrar y volver a abrir la página sin perder el progreso.")
+            time.sleep(3)
+            st.rerun()
 
-            if resultado["error"]:
-                st.error(f"Error en EVWEB: {resultado['error']}")
-                st.stop()
+        elif job['status'] == 'done':
+            st.progress(1.0)
+            mostrar_resultado(job)
+            # Botón para nueva auditoría
+            st.markdown("---")
+            if st.button("Nueva auditoría", use_container_width=True):
+                del jobs[job_id]
+                del st.session_state['job_id']
+                st.rerun()
 
-            excels_web = resultado["excels"]
-            if not excels_web:
-                st.error("No se obtuvieron registros aprobados en el período seleccionado.")
-                st.stop()
+        elif job['status'] == 'error':
+            st.error(f"Error: {job.get('error', 'desconocido')}")
+            if st.button("Reintentar", use_container_width=True):
+                del jobs[job_id]
+                del st.session_state['job_id']
+                st.rerun()
 
-            # ── Cruce y valorización ─────────────────────────────────
-            actualizar("Cruzando datos y valorizando…", 0.82)
+    else:
+        # ── Botón de inicio ───────────────────────────────────────────────
+        if st.button(
+            f"Iniciar auditoría  ·  {len(rangos_final)} tramo{'s' if len(rangos_final) != 1 else ''}",
+            type="primary",
+            use_container_width=True,
+        ):
+            if not usuario_evweb or not clave_evweb:
+                st.error("Ingrese las credenciales en el panel lateral.")
+            else:
+                # Crear job nuevo
+                jid = str(uuid.uuid4())
+                jobs[jid] = {
+                    'status':              'running',
+                    'progress':            ("Iniciando sesión en EVWEB…", 0.02),
+                    'excels':              [],
+                    'error':               None,
+                    'archivo_facturacion': archivo_facturacion,
+                    'archivo_valores':     archivo_valores,
+                    'fecha_inicio':        fecha_inicio.strftime('%Y%m%d'),
+                    'fecha_fin':           fecha_fin.strftime('%Y%m%d'),
+                    'mostrar_debug':       mostrar_debug,
+                }
+                st.session_state['job_id'] = jid
 
-            try:
-                df_val, col_id, logs_proceso = procesar_datos(
-                    excels_web, archivo_facturacion, archivo_valores,
+                def _run(jid, usuario, clave, modo, rangos):
+                    def _prog(texto, pct):
+                        jobs[jid]['progress'] = (texto, pct)
+                    try:
+                        resultado = ejecutar_extractor(usuario, clave, modo, rangos, _prog)
+                        jobs[jid]['excels'] = resultado.get('excels', [])
+                        jobs[jid]['error']  = resultado.get('error')
+                        jobs[jid]['status'] = 'done'
+                    except Exception as e:
+                        jobs[jid]['error']  = str(e)
+                        jobs[jid]['status'] = 'error'
+
+                t = threading.Thread(
+                    target=_run,
+                    args=(jid, usuario_evweb, clave_evweb, modo_oculto, rangos_final),
+                    daemon=True,
                 )
-
-                barra.progress(1.0)
-                status.markdown(
-                    "<small style='color:#6fcf97;letter-spacing:.06em'>Proceso completado</small>",
-                    unsafe_allow_html=True,
-                )
-
-                # ── Diagnóstico (opcional) ───────────────────────────
-                if mostrar_debug:
-                    st.markdown("---")
-                    st.markdown('<p class="label-section">Diagnóstico de cruces</p>', unsafe_allow_html=True)
-                    log_html = "".join(
-                        f'<div style="margin:2px 0">'
-                        f'<span style="color:#444">›</span> '
-                        f'<span style="color:#888">{l}</span></div>'
-                        for l in logs_proceso
-                    )
-                    st.markdown(f'<div class="diag-box">{log_html}</div>', unsafe_allow_html=True)
-
-                # ── Vista previa ─────────────────────────────────────
-                st.markdown("---")
-                cols_vista = [
-                    col_id,
-                    'Fecha Transacción',
-                    'Apellido y Nombre Socio',
-                    'Practi. Presta',
-                    'Descripción Práctica',
-                    'Cant. Tratamientos',
-                    'profesional',
-                    'matricula',
-                    'especialidad',
-                    'categoria',
-                    'valor_unit',
-                    'total',
-                ]
-                cols_vista = [c for c in cols_vista if c in df_val.columns]
-
-                st.markdown(
-                    f'<div class="label-section">Vista previa — {len(df_val)} registros'
-                    f' · el Excel descargado incluye todas las columnas del archivo importado</div>',
-                    unsafe_allow_html=True,
-                )
-                st.dataframe(df_val[cols_vista], use_container_width=True, hide_index=True)
-
-                # ── Métricas ─────────────────────────────────────────
-                m1, m2, m3, m4 = st.columns(4)
-                total_val   = df_val['total'].sum()
-                ok_match    = (df_val['categoria'].str.strip().isin(['A','B','C','R'])).sum()
-                sin_match   = (df_val['categoria'].isin(['revisar','no encontrado',''])).sum()
-                con_tarifa  = (df_val['valor_unit'] > 0).sum()
-
-                m1.metric("Total valorizado",    f"$ {total_val:,.2f}")
-                m2.metric("Cruzados OK",          ok_match)
-                m3.metric("Con tarifa",           con_tarifa)
-                m4.metric("Requieren revisión",   sin_match)
-
-                # ── Descarga ─────────────────────────────────────────
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    df_val.to_excel(writer, index=False, sheet_name="Valorizado")
-                output.seek(0)
-
-                st.markdown("---")
-                st.download_button(
-                    label="Descargar Excel valorizado",
-                    data=output.getvalue(),
-                    file_name=f"galeno_{fecha_inicio.strftime('%Y%m%d')}_{fecha_fin.strftime('%Y%m%d')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                )
-
-            except Exception as e:
-                st.error(f"Error en cruce de datos: {e}")
-                import traceback
-                st.code(traceback.format_exc(), language="text")
+                t.start()
+                st.rerun()
 
 elif not fechas_ok:
     st.caption("Configure el rango de fechas en el panel lateral.")
