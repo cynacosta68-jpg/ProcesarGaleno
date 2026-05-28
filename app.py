@@ -395,25 +395,10 @@ def procesar_datos(excels_evweb, archivo_facturacion, archivo_valores):
     df_evweb = pd.concat(excels_evweb, ignore_index=True)
     logs.append(f"EVWEB consolidado: {len(df_evweb)} filas, columnas: {df_evweb.columns.tolist()}")
 
-    # ── Muestra de valores de TODAS las columnas EVWEB ───────────────────
+    # ── Muestra de todas las columnas EVWEB ──────────────────────────────
     for c in df_evweb.columns:
         sample = df_evweb[c].dropna().head(3).tolist()
         logs.append(f"  EVWEB[{c}] → {sample}")
-
-    # ── Valores CRUDOS con repr() para ver espacios/caracteres ocultos ───
-    raw_evweb = df_evweb[col_auth].head(5).tolist()
-    logs.append(f"nroAutorizacion RAW tipo={df_evweb[col_auth].dtype}: {raw_evweb}")
-    logs.append(f"nroAutorizacion repr: {[repr(str(x)) for x in raw_evweb]}")
-
-    raw_libro = df_libro[col_id_libro].head(5).tolist()
-    logs.append(f"Id Transacción RAW tipo={df_libro[col_id_libro].dtype}: {raw_libro}")
-    logs.append(f"Id Transacción repr: {[repr(str(x)) for x in raw_libro]}")
-
-    # ── Match directo sin limpiar ────────────────────────────────────────
-    set_evweb_raw  = set(df_evweb[col_auth].astype(str).str.strip().tolist())
-    set_libro_raw  = set(df_libro[col_id_libro].astype(str).str.strip().tolist())
-    matches_raw = set_evweb_raw & set_libro_raw
-    logs.append(f"Matches str.strip() sin limpiar: {len(matches_raw)} → {list(matches_raw)[:5]}")
 
     # ── Detectar columna de autorización en EVWEB ────────────────────────
     col_auth, metodo_auth = detectar_col_autorizacion(df_evweb)
@@ -470,6 +455,24 @@ def procesar_datos(excels_evweb, archivo_facturacion, archivo_valores):
     df_final['_id_clean'] = df_final[col_id_libro].apply(limpiar_id)
     muestra_ids_libro = df_final['_id_clean'].head(5).tolist()
     logs.append(f"Muestra IDs Libro9 limpios: {muestra_ids_libro}")
+
+    # ── Diagnóstico de formato: repr() de ambos lados ────────────────────
+    raw_evweb = df_evweb[col_auth].head(5).tolist()
+    logs.append(f"nroAutorizacion RAW tipo={df_evweb[col_auth].dtype}: {raw_evweb}")
+    logs.append(f"nroAutorizacion repr: {[repr(str(x)) for x in raw_evweb]}")
+    raw_libro = df_libro[col_id_libro].head(5).tolist()
+    logs.append(f"Id Transacción RAW tipo={df_libro[col_id_libro].dtype}: {raw_libro}")
+    logs.append(f"Id Transacción repr: {[repr(str(x)) for x in raw_libro]}")
+    # Match directo sin limpiar
+    set_evweb_raw = set(df_evweb[col_auth].astype(str).str.strip().tolist())
+    set_libro_raw = set(df_libro[col_id_libro].astype(str).str.strip().tolist())
+    matches_raw = set_evweb_raw & set_libro_raw
+    logs.append(f"Matches str.strip() sin limpiar: {len(matches_raw)} → {list(matches_raw)[:5]}")
+    # Match con limpiar_id
+    set_evweb_clean = set(df_evweb['_auth_clean'].tolist())
+    set_libro_clean = set(df_final['_id_clean'].tolist())
+    matches_clean = set_evweb_clean & set_libro_clean
+    logs.append(f"Matches limpiar_id: {len(matches_clean)} → {list(matches_clean)[:5]}")
 
     # ── CRUCE 1: nroAutorizacion EVWEB ↔ Id Transacción Libro9 ──────────
     mapa_prof    = dict(zip(df_evweb['_auth_clean'], df_evweb[col_prof]))
