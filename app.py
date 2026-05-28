@@ -93,14 +93,21 @@ def normalizar_cadena(texto):
 
 
 def limpiar_id(val):
-    """Convierte cualquier formato de ID a string entero limpio: '160135941'"""
+    """Convierte cualquier formato de ID a string entero limpio: '160135941'
+    Maneja: número, float, texto, texto con espacios, notación científica,
+    apostrofe Excel, .0 al final, etc."""
     if pd.isna(val):
         return ""
+    # Quitar apostrofe de Excel, espacios y caracteres no visibles
+    s = str(val).strip().lstrip("'\"").strip()
+    # Quitar .0 final si existe
+    if s.endswith('.0'):
+        s = s[:-2]
+    # Intentar convertir a entero (maneja notación científica 1.6e8, etc.)
     try:
-        return str(int(float(str(val).strip())))
+        return str(int(float(s)))
     except Exception:
-        s = str(val).strip()
-        return s[:-2] if s.endswith('.0') else s
+        return s
 
 
 def detectar_col_autorizacion(df):
@@ -387,6 +394,26 @@ def procesar_datos(excels_evweb, archivo_facturacion, archivo_valores):
     # ── Consolidar EVWEB ─────────────────────────────────────────────────
     df_evweb = pd.concat(excels_evweb, ignore_index=True)
     logs.append(f"EVWEB consolidado: {len(df_evweb)} filas, columnas: {df_evweb.columns.tolist()}")
+
+    # ── Muestra de valores de TODAS las columnas EVWEB ───────────────────
+    for c in df_evweb.columns:
+        sample = df_evweb[c].dropna().head(3).tolist()
+        logs.append(f"  EVWEB[{c}] → {sample}")
+
+    # ── Valores CRUDOS con repr() para ver espacios/caracteres ocultos ───
+    raw_evweb = df_evweb[col_auth].head(5).tolist()
+    logs.append(f"nroAutorizacion RAW tipo={df_evweb[col_auth].dtype}: {raw_evweb}")
+    logs.append(f"nroAutorizacion repr: {[repr(str(x)) for x in raw_evweb]}")
+
+    raw_libro = df_libro[col_id_libro].head(5).tolist()
+    logs.append(f"Id Transacción RAW tipo={df_libro[col_id_libro].dtype}: {raw_libro}")
+    logs.append(f"Id Transacción repr: {[repr(str(x)) for x in raw_libro]}")
+
+    # ── Match directo sin limpiar ────────────────────────────────────────
+    set_evweb_raw  = set(df_evweb[col_auth].astype(str).str.strip().tolist())
+    set_libro_raw  = set(df_libro[col_id_libro].astype(str).str.strip().tolist())
+    matches_raw = set_evweb_raw & set_libro_raw
+    logs.append(f"Matches str.strip() sin limpiar: {len(matches_raw)} → {list(matches_raw)[:5]}")
 
     # ── Detectar columna de autorización en EVWEB ────────────────────────
     col_auth, metodo_auth = detectar_col_autorizacion(df_evweb)
