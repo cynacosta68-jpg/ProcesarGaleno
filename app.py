@@ -520,6 +520,61 @@ def procesar_datos(excels_evweb, archivo_facturacion, archivo_valores):
 #  SIDEBAR
 # ─────────────────────────────────────────────
 
+
+def mostrar_resultado(job):
+    """Muestra los resultados precalculados por el thread. No procesa nada."""
+    r = job.get('resultado')
+    if not r:
+        st.error("El proceso terminó pero no dejó resultados. Revisá los logs.")
+        return
+
+    st.markdown(
+        "<small style='color:#6fcf97;letter-spacing:.06em'>Proceso completado ✓</small>",
+        unsafe_allow_html=True,
+    )
+
+    # Diagnóstico opcional
+    if job.get('mostrar_debug') and r.get('logs'):
+        st.markdown("---")
+        st.markdown('<p class="label-section">Diagnóstico de cruces</p>', unsafe_allow_html=True)
+        log_html = "".join(
+            f'<div style="margin:2px 0"><span style="color:#444">›</span>'
+            f'<span style="color:#888">{l}</span></div>'
+            for l in r['logs']
+        )
+        st.markdown(f'<div class="diag-box">{log_html}</div>', unsafe_allow_html=True)
+
+    # Vista previa desde dict (no requiere releer archivos)
+    st.markdown("---")
+    st.markdown(
+        f'<div class="label-section">Vista previa — {r["n_registros"]} registros'
+        f' · el Excel descargado incluye todas las columnas del archivo importado</div>',
+        unsafe_allow_html=True,
+    )
+    st.dataframe(
+        pd.DataFrame(r['preview'], columns=r['columnas']),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # Métricas
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Total valorizado",  f"$ {r['total_val']:,.2f}")
+    m2.metric("Cruzados OK",        r['ok_match'])
+    m3.metric("Con tarifa",         r['con_tarifa'])
+    m4.metric("Requieren revisión", r['sin_match'])
+
+    # Descarga — bytes ya generados por el thread
+    st.markdown("---")
+    st.download_button(
+        label="Descargar Excel valorizado",
+        data=r['excel_bytes'],
+        file_name=f"galeno_{job['fecha_inicio']}_{job['fecha_fin']}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+
+
 with st.sidebar:
     st.markdown("### Credenciales EVWEB")
     usuario_evweb = st.text_input("Usuario", placeholder="usuario")
@@ -752,56 +807,3 @@ else:
         st.caption("Configure el rango de fechas en el panel lateral.")
     elif not archivos_ok:
         st.caption("Suba ambos archivos para continuar.")
-
-def mostrar_resultado(job):
-    """Muestra los resultados precalculados por el thread. No procesa nada."""
-    r = job.get('resultado')
-    if not r:
-        st.error("El proceso terminó pero no dejó resultados. Revisá los logs.")
-        return
-
-    st.markdown(
-        "<small style='color:#6fcf97;letter-spacing:.06em'>Proceso completado ✓</small>",
-        unsafe_allow_html=True,
-    )
-
-    # Diagnóstico opcional
-    if job.get('mostrar_debug') and r.get('logs'):
-        st.markdown("---")
-        st.markdown('<p class="label-section">Diagnóstico de cruces</p>', unsafe_allow_html=True)
-        log_html = "".join(
-            f'<div style="margin:2px 0"><span style="color:#444">›</span>'
-            f'<span style="color:#888">{l}</span></div>'
-            for l in r['logs']
-        )
-        st.markdown(f'<div class="diag-box">{log_html}</div>', unsafe_allow_html=True)
-
-    # Vista previa desde dict (no requiere releer archivos)
-    st.markdown("---")
-    st.markdown(
-        f'<div class="label-section">Vista previa — {r["n_registros"]} registros'
-        f' · el Excel descargado incluye todas las columnas del archivo importado</div>',
-        unsafe_allow_html=True,
-    )
-    st.dataframe(
-        pd.DataFrame(r['preview'], columns=r['columnas']),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    # Métricas
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total valorizado",  f"$ {r['total_val']:,.2f}")
-    m2.metric("Cruzados OK",        r['ok_match'])
-    m3.metric("Con tarifa",         r['con_tarifa'])
-    m4.metric("Requieren revisión", r['sin_match'])
-
-    # Descarga — bytes ya generados por el thread
-    st.markdown("---")
-    st.download_button(
-        label="Descargar Excel valorizado",
-        data=r['excel_bytes'],
-        file_name=f"galeno_{job['fecha_inicio']}_{job['fecha_fin']}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-    )
