@@ -649,10 +649,59 @@ else:
                     def _prog(texto, pct):
                         _JOBS[jid]['progress'] = (texto, float(pct))
                     try:
+                        # ── Paso 1: Extracción EVWEB ─────────────────────
                         resultado = ejecutar_extractor(usuario, clave, modo, rangos, _prog)
-                        _JOBS[jid]['excels'] = resultado.get('excels', [])
-                        _JOBS[jid]['error']  = resultado.get('error')
-                        _JOBS[jid]['status'] = 'done' if not resultado.get('error') else 'error'
+
+                        if resultado.get('error'):
+                            _JOBS[jid]['error']  = resultado['error']
+                            _JOBS[jid]['status'] = 'error'
+                            return
+
+                        excels_web = resultado.get('excels', [])
+                        if not excels_web:
+                            _JOBS[jid]['error']  = "No se obtuvieron registros aprobados en el período."
+                            _JOBS[jid]['status'] = 'error'
+                            return
+
+                        # ── Paso 2: Cruce y valorización ─────────────────
+                        _prog("Cruzando datos y valorizando…", 0.85)
+
+                        fac = _JOBS[jid]['archivo_facturacion']
+                        val = _JOBS[jid]['archivo_valores']
+                        fac.seek(0)
+                        val.seek(0)
+
+                        df_val, col_id, logs = procesar_datos(excels_web, fac, val)
+
+                        # ── Paso 3: Generar Excel en memoria ──────────────
+                        _prog("Generando Excel…", 0.95)
+                        out = io.BytesIO()
+                        with pd.ExcelWriter(out, engine='openpyxl') as writer:
+                            df_val.to_excel(writer, index=False, sheet_name="Valorizado")
+                        excel_bytes = out.getvalue()
+
+                        # ── Guardar resultados para la UI ─────────────────
+                        cols_vista = [
+                            col_id, 'Fecha Transacción', 'Apellido y Nombre Socio',
+                            'Practi. Presta', 'Descripción Práctica', 'Cant. Tratamientos',
+                            'profesional', 'matricula', 'especialidad',
+                            'categoria', 'valor_unit', 'total',
+                        ]
+                        cols_vista = [c for c in cols_vista if c in df_val.columns]
+
+                        _JOBS[jid]['resultado'] = {
+                            'excel_bytes': excel_bytes,
+                            'preview':     df_val[cols_vista].to_dict('records'),
+                            'columnas':    cols_vista,
+                            'total_val':   float(df_val['total'].sum()),
+                            'ok_match':    int((df_val['categoria'].str.strip().isin(['A','B','C','R'])).sum()),
+                            'sin_match':   int((df_val['categoria'].isin(['revisar','no encontrado',''])).sum()),
+                            'con_tarifa':  int((df_val['valor_unit'] > 0).sum()),
+                            'n_registros': len(df_val),
+                            'logs':        logs,
+                        }
+                        _JOBS[jid]['status'] = 'done'
+
                     except Exception as e:
                         import traceback
                         _JOBS[jid]['error']  = f"{e}\n{traceback.format_exc()}"
@@ -672,84 +721,54 @@ else:
         st.caption("Suba ambos archivos para continuar.")
 
 def mostrar_resultado(job):
-    """Renderiza resultados una vez que el job terminó."""
-    if job.get('error'):
-        st.error(f"Error en EVWEB: {job['error']}")
+    """Muestra los resultados precalculados por el thread. No procesa nada."""
+    r = job.get('resultado')
+    if not r:
+        st.error("El proceso terminó pero no dejó resultados. Revisá los logs.")
         return
 
-    excels_web = job.get('excels', [])
-    if not excels_web:
-        st.error("No se obtuvieron registros aprobados en el período seleccionado.")
-        return
+    st.markdown(
+        "<small style='color:#6fcf97;letter-spacing:.06em'>Proceso completado ✓</small>",
+        unsafe_allow_html=True,
+    )
 
-    try:
-        df_val, col_id, logs_proceso = procesar_datos(
-            excels_web,
-            job['archivo_facturacion'],
-            job['archivo_valores'],
-        )
-
-        st.markdown(
-            "<small style='color:#6fcf97;letter-spacing:.06em'>Proceso completado ✓</small>",
-            unsafe_allow_html=True,
-        )
-
-        # Diagnóstico opcional
-        if job.get('mostrar_debug') and logs_proceso:
-            st.markdown("---")
-            st.markdown('<p class="label-section">Diagnóstico de cruces</p>', unsafe_allow_html=True)
-            log_html = "".join(
-                f'<div style="margin:2px 0"><span style="color:#444">›</span> '
-                f'<span style="color:#888">{l}</span></div>'
-                for l in logs_proceso
-            )
-            st.markdown(f'<div class="diag-box">{log_html}</div>', unsafe_allow_html=True)
-
-        # Vista previa
+    # Diagnóstico opcional
+    if job.get('mostrar_debug') and r.get('logs'):
         st.markdown("---")
-        cols_vista = [
-            col_id, 'Fecha Transacción', 'Apellido y Nombre Socio',
-            'Practi. Presta', 'Descripción Práctica', 'Cant. Tratamientos',
-            'profesional', 'matricula', 'especialidad',
-            'categoria', 'valor_unit', 'total',
-        ]
-        cols_vista = [c for c in cols_vista if c in df_val.columns]
-        st.markdown(
-            f'<div class="label-section">Vista previa — {len(df_val)} registros'
-            f' · el Excel descargado incluye todas las columnas del archivo importado</div>',
-            unsafe_allow_html=True,
+        st.markdown('<p class="label-section">Diagnóstico de cruces</p>', unsafe_allow_html=True)
+        log_html = "".join(
+            f'<div style="margin:2px 0"><span style="color:#444">›</span>'
+            f'<span style="color:#888">{l}</span></div>'
+            for l in r['logs']
         )
-        st.dataframe(df_val[cols_vista], use_container_width=True, hide_index=True)
+        st.markdown(f'<div class="diag-box">{log_html}</div>', unsafe_allow_html=True)
 
-        # Métricas
-        m1, m2, m3, m4 = st.columns(4)
-        total_val  = df_val['total'].sum()
-        ok_match   = (df_val['categoria'].str.strip().isin(['A','B','C','R'])).sum()
-        sin_match  = (df_val['categoria'].isin(['revisar','no encontrado',''])).sum()
-        con_tarifa = (df_val['valor_unit'] > 0).sum()
-        m1.metric("Total valorizado",  f"$ {total_val:,.2f}")
-        m2.metric("Cruzados OK",        ok_match)
-        m3.metric("Con tarifa",         con_tarifa)
-        m4.metric("Requieren revisión", sin_match)
+    # Vista previa desde dict (no requiere releer archivos)
+    st.markdown("---")
+    st.markdown(
+        f'<div class="label-section">Vista previa — {r["n_registros"]} registros'
+        f' · el Excel descargado incluye todas las columnas del archivo importado</div>',
+        unsafe_allow_html=True,
+    )
+    st.dataframe(
+        pd.DataFrame(r['preview'], columns=r['columnas']),
+        use_container_width=True,
+        hide_index=True,
+    )
 
-        # Descarga
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df_val.to_excel(writer, index=False, sheet_name="Valorizado")
-        output.seek(0)
+    # Métricas
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Total valorizado",  f"$ {r['total_val']:,.2f}")
+    m2.metric("Cruzados OK",        r['ok_match'])
+    m3.metric("Con tarifa",         r['con_tarifa'])
+    m4.metric("Requieren revisión", r['sin_match'])
 
-        f_ini = job['fecha_inicio']
-        f_fin = job['fecha_fin']
-        st.markdown("---")
-        st.download_button(
-            label="Descargar Excel valorizado",
-            data=output.getvalue(),
-            file_name=f"galeno_{f_ini}_{f_fin}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
-
-    except Exception as e:
-        st.error(f"Error en cruce de datos: {e}")
-        import traceback
-        st.code(traceback.format_exc(), language="text")
+    # Descarga — bytes ya generados por el thread
+    st.markdown("---")
+    st.download_button(
+        label="Descargar Excel valorizado",
+        data=r['excel_bytes'],
+        file_name=f"galeno_{job['fecha_inicio']}_{job['fecha_fin']}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
