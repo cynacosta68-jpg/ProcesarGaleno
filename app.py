@@ -561,20 +561,115 @@ with st.sidebar:
 st.markdown("# ◈ Auditoría Galeno")
 st.markdown("---")
 
-col_a, col_b = st.columns(2, gap="medium")
-with col_a:
-    st.markdown('<p class="label-section">Planilla de Facturación</p>', unsafe_allow_html=True)
-    archivo_facturacion = st.file_uploader("Libro9 (.xlsx)", type=["xlsx"], label_visibility="collapsed")
-with col_b:
-    st.markdown('<p class="label-section">Base de Valores</p>', unsafe_allow_html=True)
-    archivo_valores = st.file_uploader("Galeno Base (.xlsx)", type=["xlsx"], label_visibility="collapsed")
+# ── Verificar job activo PRIMERO ─────────────────────────────────────────
+# Importante: hacerlo ANTES de renderizar los file uploaders.
+# Tras st.rerun() los uploaders se resetean → archivos_ok = False,
+# lo que ocultaría el progreso si la verificación estuviera después.
+job_id = st.session_state.get('job_id')
 
-st.markdown("---")
+# Limpiar job_id huérfano (proceso reiniciado, _JOBS vacío)
+if job_id and job_id not in _JOBS:
+    del st.session_state['job_id']
+    job_id = None
 
-archivos_ok = archivo_facturacion and archivo_valores
-fechas_ok   = fecha_inicio and fecha_fin and fecha_fin >= fecha_inicio
+if job_id:
+    # ── Job en curso: mostrar progreso, no los uploaders ─────────────────
+    job   = _JOBS[job_id]
+    estado = job['status']
+    status_txt, pct = job.get('progress', ("Iniciando…", 0.02))
 
-# ── _JOBS ya definido como global de módulo al inicio del archivo ────────
+    if estado == 'running':
+        st.info(f"⏳ {status_txt}")
+        st.progress(min(float(pct), 0.99))
+        st.caption("Proceso corriendo en segundo plano. La página se actualiza automáticamente.")
+        time.sleep(3)
+        st.rerun()
+
+    elif estado == 'done':
+        st.progress(1.0)
+        mostrar_resultado(job)
+        st.markdown("---")
+        if st.button("Nueva auditoría", use_container_width=True):
+            del _JOBS[job_id]
+            del st.session_state['job_id']
+            st.rerun()
+
+    elif estado == 'error':
+        st.error(f"Error en el proceso: {job.get('error', 'desconocido')}")
+        if st.button("Reintentar", use_container_width=True):
+            del _JOBS[job_id]
+            del st.session_state['job_id']
+            st.rerun()
+
+else:
+    # ── Sin job activo: mostrar uploaders y botón de inicio ──────────────
+    col_a, col_b = st.columns(2, gap="medium")
+    with col_a:
+        st.markdown('<p class="label-section">Planilla de Facturación</p>', unsafe_allow_html=True)
+        archivo_facturacion = st.file_uploader("Libro9 (.xlsx)", type=["xlsx"], label_visibility="collapsed")
+    with col_b:
+        st.markdown('<p class="label-section">Base de Valores</p>', unsafe_allow_html=True)
+        archivo_valores = st.file_uploader("Galeno Base (.xlsx)", type=["xlsx"], label_visibility="collapsed")
+
+    st.markdown("---")
+
+    archivos_ok = archivo_facturacion and archivo_valores
+    fechas_ok   = fecha_inicio and fecha_fin and fecha_fin >= fecha_inicio
+
+    if archivos_ok and fechas_ok:
+        rangos_final = generar_rangos_9_dias(fecha_inicio, fecha_fin)
+
+        if st.button(
+            f"Iniciar auditoría  ·  {len(rangos_final)} tramo{'s' if len(rangos_final) != 1 else ''}",
+            type="primary",
+            use_container_width=True,
+        ):
+            if not usuario_evweb or not clave_evweb:
+                st.error("Ingrese las credenciales en el panel lateral.")
+            else:
+                # Leer archivos a BytesIO ANTES del rerun (UploadedFile se resetea)
+                fac_bytes = io.BytesIO(archivo_facturacion.read())
+                val_bytes = io.BytesIO(archivo_valores.read())
+
+                jid = str(uuid.uuid4())
+                _JOBS[jid] = {
+                    'status':              'running',
+                    'progress':            ("Iniciando sesión en EVWEB…", 0.02),
+                    'excels':              [],
+                    'error':               None,
+                    'archivo_facturacion': fac_bytes,
+                    'archivo_valores':     val_bytes,
+                    'fecha_inicio':        fecha_inicio.strftime('%Y%m%d'),
+                    'fecha_fin':           fecha_fin.strftime('%Y%m%d'),
+                    'mostrar_debug':       mostrar_debug,
+                }
+                st.session_state['job_id'] = jid
+
+                def _run(jid, usuario, clave, modo, rangos):
+                    def _prog(texto, pct):
+                        _JOBS[jid]['progress'] = (texto, float(pct))
+                    try:
+                        resultado = ejecutar_extractor(usuario, clave, modo, rangos, _prog)
+                        _JOBS[jid]['excels'] = resultado.get('excels', [])
+                        _JOBS[jid]['error']  = resultado.get('error')
+                        _JOBS[jid]['status'] = 'done' if not resultado.get('error') else 'error'
+                    except Exception as e:
+                        import traceback
+                        _JOBS[jid]['error']  = f"{e}\n{traceback.format_exc()}"
+                        _JOBS[jid]['status'] = 'error'
+
+                threading.Thread(
+                    target=_run,
+                    args=(jid, usuario_evweb, clave_evweb, modo_oculto, rangos_final),
+                    daemon=True,
+                ).start()
+
+                st.rerun()
+
+    elif not fechas_ok:
+        st.caption("Configure el rango de fechas en el panel lateral.")
+    elif not archivos_ok:
+        st.caption("Suba ambos archivos para continuar.")
 
 def mostrar_resultado(job):
     """Renderiza resultados una vez que el job terminó."""
@@ -658,97 +753,3 @@ def mostrar_resultado(job):
         st.error(f"Error en cruce de datos: {e}")
         import traceback
         st.code(traceback.format_exc(), language="text")
-
-
-if archivos_ok and fechas_ok:
-    rangos_final = generar_rangos_9_dias(fecha_inicio, fecha_fin)
-    job_id = st.session_state.get('job_id')
-
-    # ── Limpiar job_id huérfano (proceso reiniciado, _JOBS vacío) ────────
-    if job_id and job_id not in _JOBS:
-        del st.session_state['job_id']
-        job_id = None
-
-    # ── Job activo: mostrar progreso o resultado ─────────────────────────
-    if job_id:
-        job = _JOBS[job_id]
-        status_txt, pct = job.get('progress', ("Iniciando…", 0.02))
-        estado = job['status']
-
-        if estado == 'running':
-            st.info(f"⏳ {status_txt}")
-            st.progress(min(float(pct), 0.99))
-            st.caption("Proceso corriendo en segundo plano. La página se actualiza automáticamente.")
-            time.sleep(3)
-            st.rerun()
-
-        elif estado == 'done':
-            st.progress(1.0)
-            mostrar_resultado(job)
-            st.markdown("---")
-            if st.button("Nueva auditoría", use_container_width=True):
-                del _JOBS[job_id]
-                del st.session_state['job_id']
-                st.rerun()
-
-        elif estado == 'error':
-            st.error(f"Error en el proceso: {job.get('error', 'desconocido')}")
-            if st.button("Reintentar", use_container_width=True):
-                del _JOBS[job_id]
-                del st.session_state['job_id']
-                st.rerun()
-
-    else:
-        # ── Botón de inicio ───────────────────────────────────────────────
-        if st.button(
-            f"Iniciar auditoría  ·  {len(rangos_final)} tramo{'s' if len(rangos_final) != 1 else ''}",
-            type="primary",
-            use_container_width=True,
-        ):
-            if not usuario_evweb or not clave_evweb:
-                st.error("Ingrese las credenciales en el panel lateral.")
-            else:
-                # ── Leer archivos a BytesIO AHORA, antes del rerun ───────
-                # UploadedFile pierde su buffer tras st.rerun(); BytesIO lo preserva.
-                fac_bytes = io.BytesIO(archivo_facturacion.read())
-                val_bytes = io.BytesIO(archivo_valores.read())
-
-                jid = str(uuid.uuid4())
-                _JOBS[jid] = {
-                    'status':              'running',
-                    'progress':            ("Iniciando sesión en EVWEB…", 0.02),
-                    'excels':              [],
-                    'error':               None,
-                    'archivo_facturacion': fac_bytes,
-                    'archivo_valores':     val_bytes,
-                    'fecha_inicio':        fecha_inicio.strftime('%Y%m%d'),
-                    'fecha_fin':           fecha_fin.strftime('%Y%m%d'),
-                    'mostrar_debug':       mostrar_debug,
-                }
-                st.session_state['job_id'] = jid
-
-                def _run(jid, usuario, clave, modo, rangos):
-                    def _prog(texto, pct):
-                        _JOBS[jid]['progress'] = (texto, float(pct))
-                    try:
-                        resultado = ejecutar_extractor(usuario, clave, modo, rangos, _prog)
-                        _JOBS[jid]['excels'] = resultado.get('excels', [])
-                        _JOBS[jid]['error']  = resultado.get('error')
-                        _JOBS[jid]['status'] = 'done' if not resultado.get('error') else 'error'
-                    except Exception as e:
-                        import traceback
-                        _JOBS[jid]['error']  = f"{e}\n{traceback.format_exc()}"
-                        _JOBS[jid]['status'] = 'error'
-
-                threading.Thread(
-                    target=_run,
-                    args=(jid, usuario_evweb, clave_evweb, modo_oculto, rangos_final),
-                    daemon=True,
-                ).start()
-
-                st.rerun()
-
-elif not fechas_ok:
-    st.caption("Configure el rango de fechas en el panel lateral.")
-elif not archivos_ok:
-    st.caption("Suba ambos archivos para continuar.")
