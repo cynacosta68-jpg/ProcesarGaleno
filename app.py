@@ -261,7 +261,7 @@ def obtener_iframe_activo(page):
 #  BOT DE EXTRACCIÓN
 # ─────────────────────────────────────────────
 
-def ejecutar_extractor(usuario, clave, modo_invisible, rangos, progreso_callback):
+def ejecutar_extractor(usuario, clave, modo_invisible, rangos, progreso_callback, filtro_estado='APOB', filtro_facturado='NO'):
     excels_descargados = []
     n_rangos = len(rangos)
 
@@ -310,12 +310,12 @@ def ejecutar_extractor(usuario, clave, modo_invisible, rangos, progreso_callback
 
                 iframe = obtener_iframe_activo(page)
                 iframe.locator("#body_cboEstados").wait_for(state="visible", timeout=15000)
-                iframe.locator("#body_cboEstados").select_option(value="APOB")
+                iframe.locator("#body_cboEstados").select_option(value=filtro_estado) if filtro_estado else None
                 time.sleep(3)
 
                 iframe = obtener_iframe_activo(page)
                 iframe.locator("#body_cboFiltroFacturado").wait_for(state="visible", timeout=15000)
-                iframe.locator("#body_cboFiltroFacturado").select_option(value="NO")
+                iframe.locator("#body_cboFiltroFacturado").select_option(value=filtro_facturado) if filtro_facturado else None
                 time.sleep(1.5)
 
 
@@ -342,11 +342,36 @@ def ejecutar_extractor(usuario, clave, modo_invisible, rangos, progreso_callback
                         locator.press_sequentially(valor, delay=100)
                     time.sleep(0.3)
 
-                inp_desde = iframe.locator("#body_txtFiltroFechaCargaDesde")
-                set_fecha(inp_desde, desde)
+                iframe = obtener_iframe_activo(page)
 
-                inp_hasta = iframe.locator("#body_txtFiltroFechaCargaHasta")
-                set_fecha(inp_hasta, hasta)
+                # ── Fechas dinámicas ──────────────────────────────────────
+                def set_fecha(iframe_ref, selector, valor):
+                    loc = iframe_ref.locator(selector)
+                    loc.wait_for(state="visible", timeout=10000)
+                    # Limpiar completamente con Ctrl+A + Delete
+                    loc.click()
+                    loc.press("Control+a")
+                    loc.press("Delete")
+                    time.sleep(0.2)
+                    loc.type(valor, delay=100)
+                    time.sleep(0.3)
+                    actual = loc.input_value()
+                    if actual != valor:
+                        loc.evaluate(
+                            f"el => {{ el.value = '{valor}'; "
+                            f"el.dispatchEvent(new Event('input', {{bubbles:true}})); "
+                            f"el.dispatchEvent(new Event('change', {{bubbles:true}})); "
+                            f"el.dispatchEvent(new Event('blur', {{bubbles:true}})); }}"
+                        )
+                        time.sleep(0.3)
+                    return loc.input_value()
+
+                val_desde = set_fecha(iframe, "#body_txtFiltroFechaCargaDesde", desde)
+                val_hasta = set_fecha(iframe, "#body_txtFiltroFechaCargaHasta", hasta)
+                progreso_callback(
+                    f"Fechas cargadas: desde={val_desde} hasta={val_hasta}",
+                    avance + 0.02,
+                )
                 time.sleep(1)
 
                 iframe.locator("#body_btnFiltro").click()
@@ -415,6 +440,11 @@ def procesar_datos(excels_evweb, archivo_facturacion, archivo_valores):
     # ── Consolidar EVWEB ─────────────────────────────────────────────────
     df_evweb = pd.concat(excels_evweb, ignore_index=True)
     logs.append(f"EVWEB consolidado: {len(df_evweb)} filas, columnas: {df_evweb.columns.tolist()}")
+
+    # Rango de fechas reales en los datos descargados
+    if 'FechaPrestacion' in df_evweb.columns:
+        fechas_evweb = df_evweb['FechaPrestacion'].dropna().unique().tolist()
+        logs.append(f"FechaPrestacion EVWEB (únicas): {fechas_evweb[:10]}")
 
     # ── Muestra de todas las columnas EVWEB ──────────────────────────────
     for c in df_evweb.columns:
@@ -655,6 +685,21 @@ with st.sidebar:
         st.caption("⚠ Fecha inicio debe ser anterior a fecha fin.")
 
     st.markdown("---")
+    st.markdown("### Filtros EVWEB")
+    filtro_estado = st.selectbox(
+        "Estado auditoría",
+        options=[("APOB", "Aprobado"), ("PEND", "Pendiente"), ("", "Todos")],
+        format_func=lambda x: x[1],
+        index=0,
+    )[0]
+    filtro_facturado = st.selectbox(
+        "Facturado",
+        options=[("NO", "No"), ("SI", "Sí"), ("", "Todos")],
+        format_func=lambda x: x[1],
+        index=0,
+    )[0]
+
+    st.markdown("---")
     st.markdown("### Opciones")
     modo_oculto   = st.checkbox("Modo invisible (headless)", value=True)
     mostrar_debug = st.checkbox("Mostrar diagnóstico de cruces", value=False)
@@ -745,7 +790,10 @@ else:
                     'archivo_facturacion': fac_bytes,
                     'archivo_valores':     val_bytes,
                     'fecha_inicio':        fecha_inicio.strftime('%Y%m%d'),
-                    'fecha_fin':           fecha_fin.strftime('%Y%m%d'),                    'mostrar_debug':       mostrar_debug,
+                    'fecha_fin':           fecha_fin.strftime('%Y%m%d'),
+                    'mostrar_debug':       mostrar_debug,
+                    'filtro_estado':       filtro_estado,
+                    'filtro_facturado':    filtro_facturado,
                 }
                 st.session_state['job_id'] = jid
 
@@ -754,7 +802,9 @@ else:
                         _JOBS[jid]['progress'] = (texto, float(pct))
                     try:
                         # ── Paso 1: Extracción EVWEB ─────────────────────
-                        resultado = ejecutar_extractor(usuario, clave, modo, rangos, _prog)
+                        resultado = ejecutar_extractor(usuario, clave, modo, rangos, _prog,
+                            _JOBS[jid].get('filtro_estado','APOB'),
+                            _JOBS[jid].get('filtro_facturado','NO'))
 
                         if resultado.get('error'):
                             _JOBS[jid]['error']  = resultado['error']
