@@ -714,8 +714,6 @@ else:
                 ).start()
 
                 # ── Loop de progreso directo ──────────────────────────────
-                # Mantiene la conexión viva y muestra progreso real
-                # sin depender de reruns entre workers
                 ph_info  = st.empty()
                 ph_barra = st.empty()
                 ph_cap   = st.empty()
@@ -724,14 +722,31 @@ else:
                     txt, pct = _JOBS[jid]['progress']
                     ph_info.info(f"⏳ {txt}")
                     ph_barra.progress(min(float(pct), 0.99))
-                    ph_cap.caption("Proceso corriendo en segundo plano…")
+                    ph_cap.caption("Proceso corriendo…")
                     time.sleep(2)
 
-                # Terminó: limpiar y mostrar resultado
+                # ── Limpiar barra y mostrar resultado EN ESTE MISMO RUN ───
+                # NO llamar st.rerun(): el WebSocket puede haber reconectado
+                # durante el while loop generando una sesión nueva sin job_id.
                 ph_info.empty()
                 ph_barra.empty()
                 ph_cap.empty()
-                st.rerun()
+
+                job_final = _JOBS[jid]
+
+                if job_final['status'] == 'done':
+                    st.progress(1.0)
+                    mostrar_resultado(job_final)
+                    st.markdown("---")
+                    if st.button("Nueva auditoría", use_container_width=True):
+                        del _JOBS[jid]
+                        st.rerun()
+
+                elif job_final['status'] == 'error':
+                    st.error(f"Error en el proceso:\n\n{job_final.get('error', 'desconocido')}")
+                    if st.button("Reintentar", use_container_width=True):
+                        del _JOBS[jid]
+                        st.rerun()
 
     elif not fechas_ok:
         st.caption("Configure el rango de fechas en el panel lateral.")
