@@ -2,9 +2,16 @@ import streamlit as st
 import pandas as pd
 import time
 import io
+import uuid
+import threading
 import unicodedata
 from datetime import datetime, timedelta, date
 from playwright.sync_api import sync_playwright
+
+# ── Dict global de jobs (nivel módulo, accesible desde threads) ──────────
+# NUNCA guardar esto en st.session_state: los threads no pueden tocar
+# el contexto de Streamlit. Este dict vive en el proceso Python puro.
+_JOBS: dict = {}
 
 # ─────────────────────────────────────────────
 #  CONFIGURACIÓN Y ESTILOS
@@ -567,16 +574,7 @@ st.markdown("---")
 archivos_ok = archivo_facturacion and archivo_valores
 fechas_ok   = fecha_inicio and fecha_fin and fecha_fin >= fecha_inicio
 
-# ── Estado global del job (sobrevive reconexiones de Streamlit) ──────────
-# Usamos un dict global indexado por job_id para que el thread de fondo
-# pueda escribir resultados aunque el WebSocket se reconecte.
-import threading, uuid
-if '_jobs' not in st.session_state:
-    st.session_state['_jobs'] = {}
-
-def _job_store():
-    """Referencia al dict global de jobs de esta sesión."""
-    return st.session_state['_jobs']
+# ── _JOBS ya definido como global de módulo al inicio del archivo ────────
 
 def mostrar_resultado(job):
     """Renderiza resultados una vez que el job terminó."""
@@ -664,7 +662,7 @@ def mostrar_resultado(job):
 
 if archivos_ok and fechas_ok:
     rangos_final = generar_rangos_9_dias(fecha_inicio, fecha_fin)
-    jobs = _job_store()
+    jobs = _JOBS
     job_id = st.session_state.get('job_id')
 
     # ── Si ya hay un job activo, mostrarlo ───────────────────────────────
