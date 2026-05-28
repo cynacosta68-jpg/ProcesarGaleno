@@ -713,6 +713,24 @@ else:
                     daemon=True,
                 ).start()
 
+                # ── Loop de progreso directo ──────────────────────────────
+                # Mantiene la conexión viva y muestra progreso real
+                # sin depender de reruns entre workers
+                ph_info  = st.empty()
+                ph_barra = st.empty()
+                ph_cap   = st.empty()
+
+                while _JOBS[jid]['status'] == 'running':
+                    txt, pct = _JOBS[jid]['progress']
+                    ph_info.info(f"⏳ {txt}")
+                    ph_barra.progress(min(float(pct), 0.99))
+                    ph_cap.caption("Proceso corriendo en segundo plano…")
+                    time.sleep(2)
+
+                # Terminó: limpiar y mostrar resultado
+                ph_info.empty()
+                ph_barra.empty()
+                ph_cap.empty()
                 st.rerun()
 
     elif not fechas_ok:
