@@ -662,38 +662,39 @@ def mostrar_resultado(job):
 
 if archivos_ok and fechas_ok:
     rangos_final = generar_rangos_9_dias(fecha_inicio, fecha_fin)
-    jobs = _JOBS
     job_id = st.session_state.get('job_id')
 
-    # ── Si ya hay un job activo, mostrarlo ───────────────────────────────
-    if job_id and job_id in jobs:
-        job = jobs[job_id]
-        status_txt, pct = job.get('progress', ("Iniciando…", 0.0))
+    # ── Limpiar job_id huérfano (proceso reiniciado, _JOBS vacío) ────────
+    if job_id and job_id not in _JOBS:
+        del st.session_state['job_id']
+        job_id = None
 
-        if job['status'] == 'running':
-            st.markdown(
-                f"<small style='color:#666;letter-spacing:.06em'>{status_txt}</small>",
-                unsafe_allow_html=True,
-            )
-            st.progress(min(pct, 0.99))
-            st.caption("El proceso corre en segundo plano — podés cerrar y volver a abrir la página sin perder el progreso.")
+    # ── Job activo: mostrar progreso o resultado ─────────────────────────
+    if job_id:
+        job = _JOBS[job_id]
+        status_txt, pct = job.get('progress', ("Iniciando…", 0.02))
+        estado = job['status']
+
+        if estado == 'running':
+            st.info(f"⏳ {status_txt}")
+            st.progress(min(float(pct), 0.99))
+            st.caption("Proceso corriendo en segundo plano. La página se actualiza automáticamente.")
             time.sleep(3)
             st.rerun()
 
-        elif job['status'] == 'done':
+        elif estado == 'done':
             st.progress(1.0)
             mostrar_resultado(job)
-            # Botón para nueva auditoría
             st.markdown("---")
             if st.button("Nueva auditoría", use_container_width=True):
-                del jobs[job_id]
+                del _JOBS[job_id]
                 del st.session_state['job_id']
                 st.rerun()
 
-        elif job['status'] == 'error':
-            st.error(f"Error: {job.get('error', 'desconocido')}")
+        elif estado == 'error':
+            st.error(f"Error en el proceso: {job.get('error', 'desconocido')}")
             if st.button("Reintentar", use_container_width=True):
-                del jobs[job_id]
+                del _JOBS[job_id]
                 del st.session_state['job_id']
                 st.rerun()
 
@@ -707,15 +708,19 @@ if archivos_ok and fechas_ok:
             if not usuario_evweb or not clave_evweb:
                 st.error("Ingrese las credenciales en el panel lateral.")
             else:
-                # Crear job nuevo
+                # ── Leer archivos a BytesIO AHORA, antes del rerun ───────
+                # UploadedFile pierde su buffer tras st.rerun(); BytesIO lo preserva.
+                fac_bytes = io.BytesIO(archivo_facturacion.read())
+                val_bytes = io.BytesIO(archivo_valores.read())
+
                 jid = str(uuid.uuid4())
-                jobs[jid] = {
+                _JOBS[jid] = {
                     'status':              'running',
                     'progress':            ("Iniciando sesión en EVWEB…", 0.02),
                     'excels':              [],
                     'error':               None,
-                    'archivo_facturacion': archivo_facturacion,
-                    'archivo_valores':     archivo_valores,
+                    'archivo_facturacion': fac_bytes,
+                    'archivo_valores':     val_bytes,
                     'fecha_inicio':        fecha_inicio.strftime('%Y%m%d'),
                     'fecha_fin':           fecha_fin.strftime('%Y%m%d'),
                     'mostrar_debug':       mostrar_debug,
@@ -724,22 +729,23 @@ if archivos_ok and fechas_ok:
 
                 def _run(jid, usuario, clave, modo, rangos):
                     def _prog(texto, pct):
-                        jobs[jid]['progress'] = (texto, pct)
+                        _JOBS[jid]['progress'] = (texto, float(pct))
                     try:
                         resultado = ejecutar_extractor(usuario, clave, modo, rangos, _prog)
-                        jobs[jid]['excels'] = resultado.get('excels', [])
-                        jobs[jid]['error']  = resultado.get('error')
-                        jobs[jid]['status'] = 'done'
+                        _JOBS[jid]['excels'] = resultado.get('excels', [])
+                        _JOBS[jid]['error']  = resultado.get('error')
+                        _JOBS[jid]['status'] = 'done' if not resultado.get('error') else 'error'
                     except Exception as e:
-                        jobs[jid]['error']  = str(e)
-                        jobs[jid]['status'] = 'error'
+                        import traceback
+                        _JOBS[jid]['error']  = f"{e}\n{traceback.format_exc()}"
+                        _JOBS[jid]['status'] = 'error'
 
-                t = threading.Thread(
+                threading.Thread(
                     target=_run,
                     args=(jid, usuario_evweb, clave_evweb, modo_oculto, rangos_final),
                     daemon=True,
-                )
-                t.start()
+                ).start()
+
                 st.rerun()
 
 elif not fechas_ok:
