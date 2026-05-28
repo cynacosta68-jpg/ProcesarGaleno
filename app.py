@@ -583,8 +583,8 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### Rango de fechas")
 
-    hoy         = date.today()
-    primer_mes  = hoy.replace(day=1)
+    hoy        = date.today()
+    primer_mes = hoy.replace(day=1)
 
     fecha_inicio = st.date_input("Desde", value=primer_mes, format="DD/MM/YYYY")
     fecha_fin    = st.date_input("Hasta", value=hoy,        format="DD/MM/YYYY")
@@ -670,10 +670,9 @@ else:
 
     archivos_ok = archivo_facturacion and archivo_valores
     fechas_ok   = fecha_inicio and fecha_fin and fecha_fin >= fecha_inicio
+    rangos_final = generar_rangos_9_dias(fecha_inicio, fecha_fin) if fechas_ok else []
 
     if archivos_ok and fechas_ok:
-        rangos_final = generar_rangos_9_dias(fecha_inicio, fecha_fin)
-
         if st.button(
             f"Iniciar auditoría  ·  {len(rangos_final)} tramo{'s' if len(rangos_final) != 1 else ''}",
             type="primary",
@@ -695,8 +694,7 @@ else:
                     'archivo_facturacion': fac_bytes,
                     'archivo_valores':     val_bytes,
                     'fecha_inicio':        fecha_inicio.strftime('%Y%m%d'),
-                    'fecha_fin':           fecha_fin.strftime('%Y%m%d'),
-                    'mostrar_debug':       mostrar_debug,
+                    'fecha_fin':           fecha_fin.strftime('%Y%m%d'),                    'mostrar_debug':       mostrar_debug,
                 }
                 st.session_state['job_id'] = jid
 
@@ -814,7 +812,7 @@ else:
                         del _JOBS[jid]
                         st.rerun()
 
-    elif not fechas_ok:
-        st.caption("Configure el rango de fechas en el panel lateral.")
     elif not archivos_ok:
         st.caption("Suba ambos archivos para continuar.")
+    elif not fechas_ok:
+        st.caption("Configure el rango de fechas en el panel lateral.")
