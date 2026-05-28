@@ -728,11 +728,22 @@ else:
 
                         df_val, col_id, logs = procesar_datos(excels_web, fac, val)
 
-                        # ── Paso 3: Generar Excel en memoria ──────────────
+                        # ── Paso 3: Generar Excel con hoja de diagnóstico ──
                         _prog("Generando Excel…", 0.95)
                         out = io.BytesIO()
                         with pd.ExcelWriter(out, engine='openpyxl') as writer:
                             df_val.to_excel(writer, index=False, sheet_name="Valorizado")
+                            # Hoja de diagnóstico — siempre incluida
+                            df_diag = pd.DataFrame({
+                                'Diagnóstico': logs,
+                                'Columnas EVWEB': [
+                                    str(excels_web[0].columns.tolist()) if excels_web else "N/A"
+                                ] + [''] * (len(logs) - 1),
+                                'IDs EVWEB (muestra)': [
+                                    str(excels_web[0].iloc[:, 0].head(5).tolist()) if excels_web else "N/A"
+                                ] + [''] * (len(logs) - 1),
+                            })
+                            df_diag.to_excel(writer, index=False, sheet_name="Diagnóstico")
                         excel_bytes = out.getvalue()
 
                         # ── Guardar resultados para la UI ─────────────────
