@@ -13,6 +13,42 @@ from playwright.sync_api import sync_playwright
 # el contexto de Streamlit. Este dict vive en el proceso Python puro.
 _JOBS: dict = {}
 
+
+# ── Helpers de query params tolerantes a la versión de Streamlit ─────────
+# st.query_params existe desde 1.30; en versiones previas se usa la API
+# experimental; si no hay ninguna, degradan a no-op (solo session_state).
+def qp_get(key):
+    try:
+        return st.query_params.get(key)
+    except Exception:
+        try:
+            vals = st.experimental_get_query_params().get(key)
+            return vals[0] if vals else None
+        except Exception:
+            return None
+
+
+def qp_set(key, value):
+    try:
+        st.query_params[key] = value
+    except Exception:
+        try:
+            st.experimental_set_query_params(**{key: value})
+        except Exception:
+            pass
+
+
+def qp_del(key):
+    try:
+        if key in st.query_params:
+            del st.query_params[key]
+    except Exception:
+        try:
+            st.experimental_set_query_params()
+        except Exception:
+            pass
+
+
 # ─────────────────────────────────────────────
 #  CONFIGURACIÓN Y ESTILOS
 # ─────────────────────────────────────────────
@@ -720,15 +756,16 @@ job_id = st.session_state.get('job_id')
 
 # Recuperar job_id desde la URL si la sesión se perdió (reconexión WebSocket / reload).
 # Esto es lo que evita que el resultado quede "huérfano" en _JOBS sin pantalla que lo muestre.
-if not job_id and 'job' in st.query_params:
-    job_id = st.query_params['job']
-    st.session_state['job_id'] = job_id
+if not job_id:
+    qp_job = qp_get('job')
+    if qp_job:
+        job_id = qp_job
+        st.session_state['job_id'] = job_id
 
 # Limpiar job_id huérfano (proceso reiniciado, _JOBS vacío)
 if job_id and job_id not in _JOBS:
     st.session_state.pop('job_id', None)
-    if 'job' in st.query_params:
-        del st.query_params['job']
+    qp_del('job')
     job_id = None
 
 if job_id:
@@ -751,8 +788,7 @@ if job_id:
         if st.button("Nueva auditoría", use_container_width=True):
             _JOBS.pop(job_id, None)
             st.session_state.pop('job_id', None)
-            if 'job' in st.query_params:
-                del st.query_params['job']
+            qp_del('job')
             st.rerun()
 
     elif estado == 'error':
@@ -760,8 +796,7 @@ if job_id:
         if st.button("Reintentar", use_container_width=True):
             _JOBS.pop(job_id, None)
             st.session_state.pop('job_id', None)
-            if 'job' in st.query_params:
-                del st.query_params['job']
+            qp_del('job')
             st.rerun()
 
 else:
@@ -808,7 +843,7 @@ else:
                     'filtro_facturado':    filtro_facturado,
                 }
                 st.session_state['job_id'] = jid
-                st.query_params['job'] = jid   # persiste el job ante reconexiones / reload
+                qp_set('job', jid)   # persiste el job ante reconexiones / reload
 
                 def _run(jid, usuario, clave, modo, rangos):
                     def _prog(texto, pct):
