@@ -324,10 +324,46 @@ def ejecutar_extractor(usuario, clave, modo_invisible, rangos, progreso_callback
             page.fill("#Password", clave)
             page.click("button[type='submit']")
 
-            page.locator("text=/Facturaci/i >> visible=true").first.wait_for(state="visible", timeout=20000)
-            page.locator("text=/Facturaci/i >> visible=true").first.click()
-            page.locator("text=/prestaci/i >> visible=true").first.wait_for(state="visible", timeout=20000)
-            page.locator("text=/prestaci/i >> visible=true").first.click()
+            # ── Verificar que el login realmente entró ───────────────────
+            # Espera a que la URL deje de ser /Login. Si sigue ahí, las
+            # credenciales fallaron o el sitio mostró un error de acceso.
+            try:
+                page.wait_for_url(lambda u: "Login" not in u, timeout=15000)
+            except Exception:
+                # Buscar mensaje de error de validación en la página de login
+                msg = ""
+                try:
+                    err_loc = page.locator(".validation-summary-errors, .field-validation-error, .text-danger")
+                    if err_loc.count() > 0:
+                        msg = err_loc.first.inner_text().strip()
+                except Exception:
+                    pass
+                detalle = f" El sitio respondió: '{msg}'." if msg else ""
+                raise RuntimeError(
+                    "Login fallido: seguimos en la pantalla de acceso tras enviar las "
+                    f"credenciales. Verificá usuario y contraseña de EVWEB.{detalle}"
+                )
+
+            progreso_callback("Sesión iniciada. Abriendo Facturación…", 0.08)
+
+            # ── Navegar al menú Facturación → prestaciones ───────────────
+            try:
+                page.locator("text=/Facturaci/i >> visible=true").first.wait_for(state="visible", timeout=20000)
+                page.locator("text=/Facturaci/i >> visible=true").first.click()
+            except Exception:
+                raise RuntimeError(
+                    "Tras iniciar sesión no apareció el menú 'Facturación' en 20s. "
+                    "Puede que el sitio haya cambiado de estructura o esté lento. "
+                    "Probá desmarcar 'Modo invisible (headless)' para ver qué muestra la página."
+                )
+            try:
+                page.locator("text=/prestaci/i >> visible=true").first.wait_for(state="visible", timeout=20000)
+                page.locator("text=/prestaci/i >> visible=true").first.click()
+            except Exception:
+                raise RuntimeError(
+                    "No apareció la opción 'prestaciones' dentro del menú Facturación en 20s. "
+                    "El menú pudo no desplegarse; probá en modo no-headless para inspeccionar."
+                )
             page.wait_for_load_state("domcontentloaded", timeout=20000)
             time.sleep(3)
 
@@ -466,8 +502,14 @@ def ejecutar_extractor(usuario, clave, modo_invisible, rangos, progreso_callback
             return {"excels": excels_descargados, "error": None}
 
         except Exception as e:
-            time.sleep(3)
-            return {"excels": [], "error": str(e)}
+            # Intentar capturar la URL actual para diagnóstico
+            contexto = ""
+            try:
+                contexto = f" [URL al fallar: {page.url}]"
+            except Exception:
+                pass
+            time.sleep(1)
+            return {"excels": [], "error": f"{e}{contexto}"}
         finally:
             browser.close()
 
