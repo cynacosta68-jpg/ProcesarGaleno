@@ -718,9 +718,17 @@ st.markdown("---")
 # lo que ocultaría el progreso si la verificación estuviera después.
 job_id = st.session_state.get('job_id')
 
+# Recuperar job_id desde la URL si la sesión se perdió (reconexión WebSocket / reload).
+# Esto es lo que evita que el resultado quede "huérfano" en _JOBS sin pantalla que lo muestre.
+if not job_id and 'job' in st.query_params:
+    job_id = st.query_params['job']
+    st.session_state['job_id'] = job_id
+
 # Limpiar job_id huérfano (proceso reiniciado, _JOBS vacío)
 if job_id and job_id not in _JOBS:
-    del st.session_state['job_id']
+    st.session_state.pop('job_id', None)
+    if 'job' in st.query_params:
+        del st.query_params['job']
     job_id = None
 
 if job_id:
@@ -741,15 +749,19 @@ if job_id:
         mostrar_resultado(job)
         st.markdown("---")
         if st.button("Nueva auditoría", use_container_width=True):
-            del _JOBS[job_id]
-            del st.session_state['job_id']
+            _JOBS.pop(job_id, None)
+            st.session_state.pop('job_id', None)
+            if 'job' in st.query_params:
+                del st.query_params['job']
             st.rerun()
 
     elif estado == 'error':
         st.error(f"Error en el proceso: {job.get('error', 'desconocido')}")
         if st.button("Reintentar", use_container_width=True):
-            del _JOBS[job_id]
-            del st.session_state['job_id']
+            _JOBS.pop(job_id, None)
+            st.session_state.pop('job_id', None)
+            if 'job' in st.query_params:
+                del st.query_params['job']
             st.rerun()
 
 else:
@@ -796,6 +808,7 @@ else:
                     'filtro_facturado':    filtro_facturado,
                 }
                 st.session_state['job_id'] = jid
+                st.query_params['job'] = jid   # persiste el job ante reconexiones / reload
 
                 def _run(jid, usuario, clave, modo, rangos):
                     def _prog(texto, pct):
@@ -878,40 +891,14 @@ else:
                     daemon=True,
                 ).start()
 
-                # ── Loop de progreso directo ──────────────────────────────
-                ph_info  = st.empty()
-                ph_barra = st.empty()
-                ph_cap   = st.empty()
+                # ── Delegar la visualización al bloque de polling superior ──
+                # Ya NO bloqueamos el run con un while: eso mantenía una única
+                # ejecución abierta durante minutos y, al reconectar el WebSocket,
+                # el resultado quedaba huérfano sin pantalla que lo mostrara.
+                # Con st.rerun() el control pasa al bloque `if job_id:` de arriba,
+                # que hace polling con runs cortos y completos (robusto a reconexión).
+                st.rerun()
 
-                while _JOBS[jid]['status'] == 'running':
-                    txt, pct = _JOBS[jid]['progress']
-                    ph_info.info(f"⏳ {txt}")
-                    ph_barra.progress(min(float(pct), 0.99))
-                    ph_cap.caption("Proceso corriendo…")
-                    time.sleep(2)
-
-                # ── Limpiar barra y mostrar resultado EN ESTE MISMO RUN ───
-                # NO llamar st.rerun(): el WebSocket puede haber reconectado
-                # durante el while loop generando una sesión nueva sin job_id.
-                ph_info.empty()
-                ph_barra.empty()
-                ph_cap.empty()
-
-                job_final = _JOBS[jid]
-
-                if job_final['status'] == 'done':
-                    st.progress(1.0)
-                    mostrar_resultado(job_final)
-                    st.markdown("---")
-                    if st.button("Nueva auditoría", use_container_width=True):
-                        del _JOBS[jid]
-                        st.rerun()
-
-                elif job_final['status'] == 'error':
-                    st.error(f"Error en el proceso:\n\n{job_final.get('error', 'desconocido')}")
-                    if st.button("Reintentar", use_container_width=True):
-                        del _JOBS[jid]
-                        st.rerun()
 
     elif not archivos_ok:
         st.caption("Suba ambos archivos para continuar.")
