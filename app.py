@@ -474,12 +474,49 @@ def ejecutar_extractor(usuario, clave, modo_invisible, rangos, progreso_callback
                     progreso_callback(f"Sin registros: {desde} → {hasta}", avance + 0.05)
                     continue
 
+                # ── Seleccionar "Todas" y FORZAR el postback ───────────────────
+                # En EVWEB la opción "Todas" (value=2000) ya viene seleccionada
+                # por defecto, así que un select_option normal NO cambia el valor
+                # y NO dispara el onchange → __doPostBack. Sin ese postback la
+                # grilla queda paginada en 10 y el export trae solo la 1ª página.
+                # Por eso forzamos el postback explícito, igual que hace el sitio.
                 try:
                     combo_pag = iframe.locator("#body_cboPageSize")
                     if combo_pag.count() > 0:
-                        combo_pag.select_option(value="625")
-                        time.sleep(6)
-                        iframe = obtener_iframe_activo(page)
+                        opts = combo_pag.locator("option")
+                        val_todas, nums = None, []
+                        for i in range(opts.count()):
+                            v = opts.nth(i).get_attribute("value")
+                            t = (opts.nth(i).inner_text() or "").strip().lower()
+                            if any(k in t for k in ("todas", "todos", "ver todo", "all")):
+                                val_todas = v
+                            try:
+                                nums.append((int(str(v).strip()), v))
+                            except Exception:
+                                pass
+
+                        objetivo = val_todas or (max(nums)[1] if nums else None)
+                        if objetivo:
+                            try:
+                                combo_pag.select_option(value=objetivo)
+                            except Exception:
+                                pass
+                            # Forzar el postback (lo mismo que el onchange del select)
+                            for fr in (iframe, page.main_frame):
+                                try:
+                                    fr.evaluate(
+                                        "__doPostBack('ctl00$body$cboPageSize','')")
+                                    break
+                                except Exception:
+                                    continue
+                            progreso_callback(
+                                f"{desde}→{hasta}: aplicando 'Todas'…", avance + 0.045)
+                            try:
+                                page.wait_for_load_state("networkidle", timeout=20000)
+                            except Exception:
+                                pass
+                            time.sleep(5)
+                            iframe = obtener_iframe_activo(page)
                 except Exception:
                     pass
 
