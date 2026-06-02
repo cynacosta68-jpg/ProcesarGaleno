@@ -711,22 +711,50 @@ def mostrar_resultado(job):
         unsafe_allow_html=True,
     )
 
-    # Diagnóstico opcional
-    if job.get('mostrar_debug') and r.get('logs'):
-        st.markdown("---")
-        st.markdown('<p class="label-section">Diagnóstico de cruces</p>', unsafe_allow_html=True)
-        log_html = "".join(
-            f'<div style="margin:2px 0"><span style="color:#444">›</span>'
-            f'<span style="color:#888">{l}</span></div>'
-            for l in r['logs']
-        )
-        st.markdown(f'<div class="diag-box">{log_html}</div>', unsafe_allow_html=True)
+    tipo = r.get('tipo', 'cruzar')
 
-    # Vista previa desde dict (no requiere releer archivos)
+    # ════════════════════════════════════════════════════════════════════
+    #  MODO 1 — Resultado de extracción: Excel EVWEB unificado
+    # ════════════════════════════════════════════════════════════════════
+    if tipo == 'extraer':
+        st.markdown("---")
+        c1, c2 = st.columns(2)
+        c1.metric("Registros unificados", r['n_registros'])
+        c2.metric("Tramos descargados",   r['n_tramos'])
+        if r.get('filas_tramo'):
+            st.caption("Filas por tramo: " + " · ".join(str(n) for n in r['filas_tramo']))
+
+        st.markdown('<div class="label-section">Vista previa (primeras 50 filas)</div>', unsafe_allow_html=True)
+        st.dataframe(
+            pd.DataFrame(r['preview'], columns=r['columnas']),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.markdown("---")
+        st.download_button(
+            label="Descargar EVWEB unificado",
+            data=r['excel_bytes'],
+            file_name=f"evweb_unificado_{job['fecha_inicio']}_{job['fecha_fin']}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+        st.caption("Luego pasá al Modo 2 (panel lateral) y subí este archivo para cruzar y valorizar.")
+        return
+
+    # ════════════════════════════════════════════════════════════════════
+    #  MODO 2 — Resultado de cruce y valorización
+    # ════════════════════════════════════════════════════════════════════
+    # Diagnóstico de cruces — siempre disponible (plegado)
+    if r.get('logs'):
+        with st.expander("🔍 Diagnóstico de cruces (abrir si faltan coincidencias)", expanded=False):
+            for l in r['logs']:
+                st.text(l)
+
     st.markdown("---")
     st.markdown(
         f'<div class="label-section">Vista previa — {r["n_registros"]} registros'
-        f' · el Excel descargado incluye todas las columnas del archivo importado</div>',
+        f' · el Excel descargado incluye todas las columnas</div>',
         unsafe_allow_html=True,
     )
     st.dataframe(
@@ -735,14 +763,12 @@ def mostrar_resultado(job):
         hide_index=True,
     )
 
-    # Métricas
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total valorizado",  f"$ {r['total_val']:,.2f}")
     m2.metric("Cruzados OK",        r['ok_match'])
     m3.metric("Con tarifa",         r['con_tarifa'])
-    m4.metric("Requieren revisión", r['sin_match'])
+    m4.metric("Sin profesional",    r['sin_match'])
 
-    # Descarga — bytes ya generados por el thread
     st.markdown("---")
     st.download_button(
         label="Descargar Excel valorizado",
@@ -754,6 +780,18 @@ def mostrar_resultado(job):
 
 
 with st.sidebar:
+    st.markdown("### Modo de trabajo")
+    modo_op = st.radio(
+        "modo",
+        options=["extraer", "cruzar"],
+        format_func=lambda x: {
+            "extraer": "1 · Extraer de EVWEB (bot) → Excel unificado",
+            "cruzar":  "2 · Cruzar y valorizar (subís el unificado)",
+        }[x],
+        label_visibility="collapsed",
+    )
+    st.markdown("---")
+
     st.markdown("### Credenciales EVWEB")
     usuario_evweb = st.text_input("Usuario", placeholder="usuario")
     clave_evweb   = st.text_input("Contraseña", type="password", placeholder="••••••••")
@@ -861,100 +899,166 @@ if job_id:
             st.rerun()
 
 else:
-    # ── Sin job activo: mostrar uploaders y botón de inicio ──────────────
-    col_a, col_b = st.columns(2, gap="medium")
-    with col_a:
-        st.markdown('<p class="label-section">Planilla de Facturación</p>', unsafe_allow_html=True)
-        archivo_facturacion = st.file_uploader("Libro9 (.xlsx)", type=["xlsx"], label_visibility="collapsed")
-    with col_b:
-        st.markdown('<p class="label-section">Base de Valores</p>', unsafe_allow_html=True)
-        archivo_valores = st.file_uploader("Galeno Base (.xlsx)", type=["xlsx"], label_visibility="collapsed")
+    # ── Sin job activo: UI según el modo seleccionado ────────────────────
 
-    st.markdown("---")
+    if modo_op == "extraer":
+        # ═══════════════════════════════════════════════════════════════
+        #  MODO 1 — El bot extrae EVWEB y unifica los tramos en un Excel
+        # ═══════════════════════════════════════════════════════════════
+        st.markdown(
+            '<p class="label-section">Modo extracción · el bot descarga EVWEB tramo por tramo '
+            'y arma un único Excel unificado para que lo descargues</p>',
+            unsafe_allow_html=True,
+        )
+        st.markdown("---")
 
-    archivos_ok = archivo_facturacion and archivo_valores
-    fechas_ok   = fecha_inicio and fecha_fin and fecha_fin >= fecha_inicio
-    rangos_final = generar_rangos_9_dias(fecha_inicio, fecha_fin) if fechas_ok else []
+        fechas_ok    = fecha_inicio and fecha_fin and fecha_fin >= fecha_inicio
+        rangos_final = generar_rangos_9_dias(fecha_inicio, fecha_fin) if fechas_ok else []
 
-    if archivos_ok and fechas_ok:
-        if st.button(
-            f"Iniciar auditoría  ·  {len(rangos_final)} tramo{'s' if len(rangos_final) != 1 else ''}",
-            type="primary",
-            use_container_width=True,
-        ):
-            if not usuario_evweb or not clave_evweb:
-                st.error("Ingrese las credenciales en el panel lateral.")
-            else:
-                # Leer archivos a BytesIO ANTES del rerun (UploadedFile se resetea)
-                fac_bytes = io.BytesIO(archivo_facturacion.read())
-                val_bytes = io.BytesIO(archivo_valores.read())
+        if fechas_ok:
+            if st.button(
+                f"Extraer y unificar  ·  {len(rangos_final)} tramo{'s' if len(rangos_final) != 1 else ''}",
+                type="primary",
+                use_container_width=True,
+            ):
+                if not usuario_evweb or not clave_evweb:
+                    st.error("Ingrese las credenciales en el panel lateral.")
+                else:
+                    jid = str(uuid.uuid4())
+                    _JOBS[jid] = {
+                        'status':           'running',
+                        'progress':         ("Iniciando sesión en EVWEB…", 0.02),
+                        'modo':             'extraer',
+                        'error':            None,
+                        'fecha_inicio':     fecha_inicio.strftime('%Y%m%d'),
+                        'fecha_fin':        fecha_fin.strftime('%Y%m%d'),
+                        'filtro_estado':    filtro_estado,
+                        'filtro_facturado': filtro_facturado,
+                    }
+                    st.session_state['job_id'] = jid
+                    qp_set('job', jid)
+
+                    def _run_extraer(jid, usuario, clave, modo, rangos):
+                        def _prog(texto, pct):
+                            _JOBS[jid]['progress'] = (texto, float(pct))
+                        try:
+                            resultado = ejecutar_extractor(
+                                usuario, clave, modo, rangos, _prog,
+                                _JOBS[jid].get('filtro_estado', 'APOB'),
+                                _JOBS[jid].get('filtro_facturado', 'NO'),
+                            )
+                            if resultado.get('error'):
+                                _JOBS[jid]['error']  = resultado['error']
+                                _JOBS[jid]['status'] = 'error'
+                                return
+
+                            excels_web = resultado.get('excels', [])
+                            if not excels_web or all(len(d) == 0 for d in excels_web):
+                                _JOBS[jid]['error']  = "El bot no descargó registros de EVWEB en el período."
+                                _JOBS[jid]['status'] = 'error'
+                                return
+
+                            # ── Unificar todos los tramos en un único Excel ──
+                            _prog("Unificando Excel descargados…", 0.90)
+                            df_uni = pd.concat(excels_web, ignore_index=True)
+
+                            out = io.BytesIO()
+                            with pd.ExcelWriter(out, engine='openpyxl') as w:
+                                df_uni.to_excel(w, index=False, sheet_name="EVWEB")
+                            excel_bytes = out.getvalue()
+
+                            preview_cols = df_uni.columns.tolist()
+                            _JOBS[jid]['resultado'] = {
+                                'tipo':        'extraer',
+                                'excel_bytes': excel_bytes,
+                                'preview':     df_uni.head(50).astype(str).to_dict('records'),
+                                'columnas':    preview_cols,
+                                'n_registros': len(df_uni),
+                                'n_tramos':    len(excels_web),
+                                'filas_tramo': [len(d) for d in excels_web],
+                            }
+                            _JOBS[jid]['status'] = 'done'
+
+                        except Exception as e:
+                            import traceback
+                            _JOBS[jid]['error']  = f"{e}\n{traceback.format_exc()}"
+                            _JOBS[jid]['status'] = 'error'
+
+                    threading.Thread(
+                        target=_run_extraer,
+                        args=(jid, usuario_evweb, clave_evweb, modo_oculto, rangos_final),
+                        daemon=True,
+                    ).start()
+                    st.rerun()
+        else:
+            st.caption("Configure un rango de fechas válido en el panel lateral.")
+
+    else:
+        # ═══════════════════════════════════════════════════════════════
+        #  MODO 2 — Cruzar y valorizar (subiendo el EVWEB unificado)
+        # ═══════════════════════════════════════════════════════════════
+        col_a, col_b = st.columns(2, gap="medium")
+        with col_a:
+            st.markdown('<p class="label-section">Facturación · Conectividad / Libro9</p>', unsafe_allow_html=True)
+            archivo_facturacion = st.file_uploader("Libro9 (.xlsx)", type=["xlsx"], label_visibility="collapsed")
+        with col_b:
+            st.markdown('<p class="label-section">Base de Valores · Usuarios + VF</p>', unsafe_allow_html=True)
+            archivo_valores = st.file_uploader("Galeno Base (.xlsx)", type=["xlsx"], label_visibility="collapsed")
+
+        st.markdown('<p class="label-section">EVWEB unificado · el que generó el Modo 1 (o tu extracto manual)</p>', unsafe_allow_html=True)
+        archivo_evweb = st.file_uploader("EVWEB unificado (.xlsx)", type=["xlsx"], label_visibility="collapsed", key="evweb_upload")
+
+        st.markdown("---")
+
+        listo = bool(archivo_facturacion) and bool(archivo_valores) and bool(archivo_evweb)
+
+        if listo:
+            if st.button("Cruzar y valorizar", type="primary", use_container_width=True):
+                fac_bytes   = io.BytesIO(archivo_facturacion.read())
+                val_bytes   = io.BytesIO(archivo_valores.read())
+                evweb_bytes = io.BytesIO(archivo_evweb.read())
 
                 jid = str(uuid.uuid4())
                 _JOBS[jid] = {
                     'status':              'running',
-                    'progress':            ("Iniciando sesión en EVWEB…", 0.02),
-                    'excels':              [],
+                    'progress':            ("Preparando cruce…", 0.05),
+                    'modo':                'cruzar',
                     'error':               None,
                     'archivo_facturacion': fac_bytes,
                     'archivo_valores':     val_bytes,
+                    'archivo_evweb':       evweb_bytes,
                     'fecha_inicio':        fecha_inicio.strftime('%Y%m%d'),
                     'fecha_fin':           fecha_fin.strftime('%Y%m%d'),
-                    'mostrar_debug':       mostrar_debug,
-                    'filtro_estado':       filtro_estado,
-                    'filtro_facturado':    filtro_facturado,
                 }
                 st.session_state['job_id'] = jid
-                qp_set('job', jid)   # persiste el job ante reconexiones / reload
+                qp_set('job', jid)
 
-                def _run(jid, usuario, clave, modo, rangos):
+                def _run_cruzar(jid):
                     def _prog(texto, pct):
                         _JOBS[jid]['progress'] = (texto, float(pct))
                     try:
-                        # ── Paso 1: Extracción EVWEB ─────────────────────
-                        resultado = ejecutar_extractor(usuario, clave, modo, rangos, _prog,
-                            _JOBS[jid].get('filtro_estado','APOB'),
-                            _JOBS[jid].get('filtro_facturado','NO'))
-
-                        if resultado.get('error'):
-                            _JOBS[jid]['error']  = resultado['error']
+                        ev = _JOBS[jid]['archivo_evweb']; ev.seek(0)
+                        try:
+                            excels_web = [pd.read_excel(ev)]
+                        except Exception as e:
+                            _JOBS[jid]['error']  = f"No se pudo leer el EVWEB unificado: {e}"
                             _JOBS[jid]['status'] = 'error'
                             return
 
-                        excels_web = resultado.get('excels', [])
-                        if not excels_web:
-                            _JOBS[jid]['error']  = "No se obtuvieron registros aprobados en el período."
-                            _JOBS[jid]['status'] = 'error'
-                            return
-
-                        # ── Paso 2: Cruce y valorización ─────────────────
-                        _prog("Cruzando datos y valorizando…", 0.85)
-
-                        fac = _JOBS[jid]['archivo_facturacion']
-                        val = _JOBS[jid]['archivo_valores']
-                        fac.seek(0)
-                        val.seek(0)
+                        _prog("Cruzando y valorizando…", 0.50)
+                        fac = _JOBS[jid]['archivo_facturacion']; fac.seek(0)
+                        val = _JOBS[jid]['archivo_valores'];     val.seek(0)
 
                         df_val, col_id, logs = procesar_datos(excels_web, fac, val)
 
-                        # ── Paso 3: Generar Excel con hoja de diagnóstico ──
-                        _prog("Generando Excel…", 0.95)
+                        _prog("Generando Excel…", 0.92)
                         out = io.BytesIO()
                         with pd.ExcelWriter(out, engine='openpyxl') as writer:
                             df_val.to_excel(writer, index=False, sheet_name="Valorizado")
-                            # Hoja de diagnóstico — siempre incluida
-                            df_diag = pd.DataFrame({
-                                'Diagnóstico': logs,
-                                'Columnas EVWEB': [
-                                    str(excels_web[0].columns.tolist()) if excels_web else "N/A"
-                                ] + [''] * (len(logs) - 1),
-                                'IDs EVWEB (muestra)': [
-                                    str(excels_web[0].iloc[:, 0].head(5).tolist()) if excels_web else "N/A"
-                                ] + [''] * (len(logs) - 1),
-                            })
-                            df_diag.to_excel(writer, index=False, sheet_name="Diagnóstico")
+                            pd.DataFrame({'Diagnóstico': logs}).to_excel(
+                                writer, index=False, sheet_name="Diagnóstico")
                         excel_bytes = out.getvalue()
 
-                        # ── Guardar resultados para la UI ─────────────────
                         cols_vista = [
                             col_id, 'Fecha Transacción', 'Apellido y Nombre Socio',
                             'Practi. Presta', 'Descripción Práctica', 'Cant. Tratamientos',
@@ -963,13 +1067,15 @@ else:
                         ]
                         cols_vista = [c for c in cols_vista if c in df_val.columns]
 
+                        cat = df_val['categoria'].astype(str).str.strip()
                         _JOBS[jid]['resultado'] = {
+                            'tipo':        'cruzar',
                             'excel_bytes': excel_bytes,
-                            'preview':     df_val[cols_vista].to_dict('records'),
+                            'preview':     df_val[cols_vista].astype(str).to_dict('records'),
                             'columnas':    cols_vista,
                             'total_val':   float(df_val['total'].sum()),
-                            'ok_match':    int((df_val['categoria'].str.strip().isin(['A','B','C','R'])).sum()),
-                            'sin_match':   int((df_val['categoria'].isin(['revisar','no encontrado',''])).sum()),
+                            'ok_match':    int((df_val['profesional'].astype(str).str.strip() != 'revisar').sum()),
+                            'sin_match':   int((df_val['profesional'].astype(str).str.strip() == 'revisar').sum()),
                             'con_tarifa':  int((df_val['valor_unit'] > 0).sum()),
                             'n_registros': len(df_val),
                             'logs':        logs,
@@ -981,22 +1087,7 @@ else:
                         _JOBS[jid]['error']  = f"{e}\n{traceback.format_exc()}"
                         _JOBS[jid]['status'] = 'error'
 
-                threading.Thread(
-                    target=_run,
-                    args=(jid, usuario_evweb, clave_evweb, modo_oculto, rangos_final),
-                    daemon=True,
-                ).start()
-
-                # ── Delegar la visualización al bloque de polling superior ──
-                # Ya NO bloqueamos el run con un while: eso mantenía una única
-                # ejecución abierta durante minutos y, al reconectar el WebSocket,
-                # el resultado quedaba huérfano sin pantalla que lo mostrara.
-                # Con st.rerun() el control pasa al bloque `if job_id:` de arriba,
-                # que hace polling con runs cortos y completos (robusto a reconexión).
+                threading.Thread(target=_run_cruzar, args=(jid,), daemon=True).start()
                 st.rerun()
-
-
-    elif not archivos_ok:
-        st.caption("Suba ambos archivos para continuar.")
-    elif not fechas_ok:
-        st.caption("Configure el rango de fechas en el panel lateral.")
+        else:
+            st.caption("Subí los tres archivos: Facturación, Base de Valores y EVWEB unificado.")
