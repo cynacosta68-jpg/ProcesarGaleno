@@ -8,10 +8,12 @@ import unicodedata
 from datetime import datetime, timedelta, date
 from playwright.sync_api import sync_playwright
 
-# ── Dict global de jobs (nivel módulo, accesible desde threads) ──────────
-# NUNCA guardar esto en st.session_state: los threads no pueden tocar
-# el contexto de Streamlit. Este dict vive en el proceso Python puro.
-_JOBS: dict = {}
+# ── Registro global de jobs ──────────────────────────────────────────────
+# NUNCA usar st.session_state (los threads no pueden tocar el contexto de
+# Streamlit). Tampoco un dict de nivel módulo plano: Streamlit re-ejecuta el
+# script en cada rerun y eso lo reiniciaría a {}. Se inicializa más abajo con
+# @st.cache_resource, que devuelve SIEMPRE el mismo objeto entre reruns y
+# sesiones, y que los threads pueden mutar sin problema.
 
 
 # ── Helpers de query params tolerantes a la versión de Streamlit ─────────
@@ -58,6 +60,15 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+# ── Registro de jobs persistente entre reruns y sesiones ─────────────────
+@st.cache_resource(show_spinner=False)
+def _get_jobs_registry():
+    return {}
+
+_JOBS = _get_jobs_registry()
+
 
 st.markdown("""
 <style>
