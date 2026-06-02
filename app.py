@@ -324,45 +324,53 @@ def ejecutar_extractor(usuario, clave, modo_invisible, rangos, progreso_callback
             page.fill("#Password", clave)
             page.click("button[type='submit']")
 
-            # ── Verificar que el login realmente entró ───────────────────
-            # Espera a que la URL deje de ser /Login. Si sigue ahí, las
-            # credenciales fallaron o el sitio mostró un error de acceso.
+            # Dar un respiro al redirect post-login y estabilizar la carga
             try:
-                page.wait_for_url(lambda u: "Login" not in u, timeout=15000)
+                page.wait_for_load_state("domcontentloaded", timeout=20000)
             except Exception:
-                # Buscar mensaje de error de validación en la página de login
-                msg = ""
-                try:
-                    err_loc = page.locator(".validation-summary-errors, .field-validation-error, .text-danger")
-                    if err_loc.count() > 0:
-                        msg = err_loc.first.inner_text().strip()
-                except Exception:
-                    pass
-                detalle = f" El sitio respondió: '{msg}'." if msg else ""
-                raise RuntimeError(
-                    "Login fallido: seguimos en la pantalla de acceso tras enviar las "
-                    f"credenciales. Verificá usuario y contraseña de EVWEB.{detalle}"
-                )
+                pass
+            time.sleep(2)
 
             progreso_callback("Sesión iniciada. Abriendo Facturación…", 0.08)
 
             # ── Navegar al menú Facturación → prestaciones ───────────────
+            # La aparición del menú es la verdadera señal de login OK.
             try:
-                page.locator("text=/Facturaci/i >> visible=true").first.wait_for(state="visible", timeout=20000)
+                page.locator("text=/Facturaci/i >> visible=true").first.wait_for(state="visible", timeout=30000)
                 page.locator("text=/Facturaci/i >> visible=true").first.click()
             except Exception:
+                url_actual = ""
+                try:
+                    url_actual = page.url
+                except Exception:
+                    pass
+                if "Login" in url_actual:
+                    # Realmente seguimos en login → credenciales
+                    msg = ""
+                    try:
+                        err_loc = page.locator(".validation-summary-errors, .field-validation-error, .text-danger")
+                        if err_loc.count() > 0:
+                            msg = err_loc.first.inner_text().strip()
+                    except Exception:
+                        pass
+                    detalle = f" El sitio respondió: '{msg}'." if msg else ""
+                    raise RuntimeError(
+                        "Login fallido: seguimos en la pantalla de acceso. "
+                        f"Verificá usuario y contraseña de EVWEB.{detalle}"
+                    )
                 raise RuntimeError(
-                    "Tras iniciar sesión no apareció el menú 'Facturación' en 20s. "
-                    "Puede que el sitio haya cambiado de estructura o esté lento. "
-                    "Probá desmarcar 'Modo invisible (headless)' para ver qué muestra la página."
+                    f"Login OK (URL: {url_actual or 'desconocida'}) pero NO apareció el menú "
+                    "'Facturación' en 30s. El sitio pudo cambiar de estructura, estar lento, o "
+                    "comportarse distinto en modo headless. Probá desmarcar 'Modo invisible' "
+                    "para ver la página post-login y confirmar dónde está el menú."
                 )
             try:
                 page.locator("text=/prestaci/i >> visible=true").first.wait_for(state="visible", timeout=20000)
                 page.locator("text=/prestaci/i >> visible=true").first.click()
             except Exception:
                 raise RuntimeError(
-                    "No apareció la opción 'prestaciones' dentro del menú Facturación en 20s. "
-                    "El menú pudo no desplegarse; probá en modo no-headless para inspeccionar."
+                    "Apareció 'Facturación' pero no la opción 'prestaciones' en 20s. "
+                    "El submenú pudo no desplegarse; revisá en modo no-headless."
                 )
             page.wait_for_load_state("domcontentloaded", timeout=20000)
             time.sleep(3)
